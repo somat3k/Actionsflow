@@ -77,7 +77,10 @@ def run_training(config_path: Optional[Path] = None) -> int:
 
     summary = "## 🤖 Model Training Results\n\n| Symbol | XGB | GB | RF | LSTM |\n|---|---|---|---|---|\n"
     for sym, scores in results.items():
-        row = f"| {sym} | {scores.get('xgb', 'N/A'):.4f if isinstance(scores.get('xgb'), float) else 'N/A'} | {scores.get('gb', 'N/A'):.4f if isinstance(scores.get('gb'), float) else 'N/A'} | {scores.get('rf', 'N/A'):.4f if isinstance(scores.get('rf'), float) else 'N/A'} | {scores.get('lstm', 'N/A'):.4f if isinstance(scores.get('lstm'), float) else 'N/A'} |\n"
+        def _fmt(key: str) -> str:
+            v = scores.get(key)
+            return f"{v:.4f}" if isinstance(v, float) else "N/A"
+        row = f"| {sym} | {_fmt('xgb')} | {_fmt('gb')} | {_fmt('rf')} | {_fmt('lstm')} |\n"
         summary += row
     _print_github_summary(summary)
     log.info("Training complete. Results: %s", results)
@@ -413,9 +416,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--mode",
-        choices=["paper", "live"],
+        choices=["paper", "live", "test"],
         default=None,
-        help="Trading mode override",
+        help="Trading mode override (test uses synthetic data, no API calls required)",
     )
     parser.add_argument(
         "--config",

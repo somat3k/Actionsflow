@@ -1,6 +1,8 @@
 # ══════════════════════════════════════════════════════════════════════════════
 #  CI – Tests & Lint
 #  Runs unit tests and linting on every push and pull request.
+#  Also runs the complete trading pipeline in test mode (integration test)
+#  to verify all components work together without external API credentials.
 # ══════════════════════════════════════════════════════════════════════════════
 
 name: CI – Tests & Lint
@@ -51,3 +53,84 @@ jobs:
           name: test-results-py${{ matrix.python-version }}
           path: results/
           retention-days: 7
+
+  # ── Integration test – full pipeline in test mode ─────────────────────────
+  integration-test:
+    name: Integration Test – Full Pipeline (test mode)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Run after unit tests so fast failures surface first.
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create required directories
+        run: mkdir -p models results .trading_state
+
+      # ── Stage 1: train ML models on synthetic data ──────────────────────
+      - name: Run train-models (test mode)
+        env:
+          TRADING_MODE: test
+          LOG_LEVEL: INFO
+        run: |
+          echo "## 🤖 Integration Test – Model Training" >> "$GITHUB_STEP_SUMMARY"
+          python -m src.main --run-type train-models --mode test
+          echo "✅ train-models completed" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 2: execute one signal cycle using trained models ──────────
+      - name: Run signal cycle (test mode)
+        env:
+          TRADING_MODE: test
+          LOG_LEVEL: INFO
+        run: |
+          echo "## 📊 Integration Test – Signal Cycle" >> "$GITHUB_STEP_SUMMARY"
+          python -m src.main --run-type signal --mode test
+          echo "✅ signal cycle completed" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Stage 3: evaluate paper trading performance ──────────────────────
+      - name: Run evaluation (test mode)
+        env:
+          TRADING_MODE: test
+          LOG_LEVEL: INFO
+        run: |
+          echo "## 📈 Integration Test – Evaluation" >> "$GITHUB_STEP_SUMMARY"
+          python -m src.main --run-type evaluate --mode test
+          echo "✅ evaluation completed" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Verify key artifacts were produced ──────────────────────────────
+      - name: Verify pipeline artifacts
+        run: |
+          echo "### 🗂️ Artifact Check" >> "$GITHUB_STEP_SUMMARY"
+          for f in results/training_scores.json .trading_state/paper_broker.json results/evaluation_report.json; do
+            if [ -f "$f" ]; then
+              echo "✅ $f" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "❌ $f not found" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          done
+
+      - name: Upload integration test artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-results-${{ github.run_number }}
+          path: |
+            results/
+            .trading_state/
+          retention-days: 7
+

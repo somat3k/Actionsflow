@@ -2,14 +2,18 @@
 Quantum Trading System – Hyperliquid Data Fetcher
 Fetches OHLCV candles, order book snapshots, funding rates, and open interest
 from the Hyperliquid public REST API.
+
+Set TRADING_MODE=test to use synthetic data instead of live API calls.
 """
 
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import requests
 
 from src.config import AppConfig, DataConfig
@@ -224,7 +228,15 @@ class HyperliquidDataFetcher:
         return all_candles
 
     def _post(self, payload: Dict) -> Any:
-        """POST to Hyperliquid info endpoint with retry logic."""
+        """POST to Hyperliquid info endpoint with retry logic.
+
+        When ``TRADING_MODE=test``, returns synthetic data instead of making
+        real network requests so the complete pipeline can be exercised in CI
+        without external API credentials.
+        """
+        if os.environ.get("TRADING_MODE") == "test":
+            return self._synthetic_response(payload)
+
         retries = 3
         for attempt in range(retries):
             try:
@@ -247,3 +259,70 @@ class HyperliquidDataFetcher:
                 )
                 time.sleep(wait)
         return None
+
+    # ── Test-mode helpers ──────────────────────────────────────────────────────
+
+    def _synthetic_response(self, payload: Dict) -> Any:
+        """Return deterministic synthetic data for test/CI mode (TRADING_MODE=test)."""
+        ptype = payload.get("type", "")
+        if ptype == "candleSnapshot":
+            return self._synthetic_candles()
+        if ptype == "l2Book":
+            return {
+                "levels": [
+                    [{"px": "40100", "sz": "0.5"}, {"px": "40090", "sz": "1.0"}],
+                    [{"px": "40110", "sz": "0.8"}, {"px": "40120", "sz": "0.3"}],
+                ]
+            }
+        if ptype == "metaAndAssetCtxs":
+            # Return entries for all common symbols so fetch_funding_rate works for any.
+            symbols = ["BTC", "ETH", "SOL", "ARB"]
+            prices = [40_000.0, 3_000.0, 100.0, 1.0]
+            universe = [{"name": s} for s in symbols]
+            contexts = [
+                {
+                    "funding": "0.0001",
+                    "openInterest": str(1_000.0),
+                    "markPx": str(px),
+                    "oraclePx": str(px),
+                    "midPx": str(px),
+                }
+                for px in prices
+            ]
+            return [{"universe": universe}, contexts]
+        if ptype == "recentTrades":
+            return [
+                {"time": 1_700_000_000_000 + i * 1_000, "px": "40000", "sz": "1.0", "side": "B"}
+                for i in range(20)
+            ]
+        return None
+
+    @staticmethod
+    def _synthetic_candles(n: int = 400) -> List[Dict]:
+        """Generate deterministic synthetic OHLCV candle dicts for test mode.
+
+        Uses a fixed random seed so results are reproducible across runs.
+        Generates ``n`` candles (default 400), which is sufficient for all
+        technical indicators produced by :func:`~src.utils.add_all_features`.
+        """
+        rng = np.random.default_rng(42)
+        candles: List[Dict] = []
+        price = 40_000.0
+        interval_ms = 60_000 * 15  # 15-minute candles
+        start_ms = 1_700_000_000_000
+        for i in range(n):
+            price *= 1.0 + float(rng.normal(0, 0.001))
+            price = max(1_000.0, price)
+            candles.append(
+                {
+                    "t": start_ms + i * interval_ms,
+                    "T": start_ms + (i + 1) * interval_ms - 1,
+                    "o": str(round(price * 0.999, 2)),
+                    "h": str(round(price * 1.002, 2)),
+                    "l": str(round(price * 0.997, 2)),
+                    "c": str(round(price, 2)),
+                    "v": str(round(float(abs(rng.normal(500, 100))), 2)),
+                    "n": str(int(rng.integers(100, 1_000))),  # num_trades (Hyperliquid field)
+                }
+            )
+        return candles
