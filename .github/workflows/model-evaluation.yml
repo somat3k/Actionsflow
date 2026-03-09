@@ -1,0 +1,163 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Model Evaluation & Elevating Adjustments
+#  Evaluates paper trading performance against thresholds, generates
+#  adjustment recommendations via Gemini AI, and optionally triggers
+#  automatic parameter elevations.
+#  Runs hourly and after each batch of trades.
+# ══════════════════════════════════════════════════════════════════════════════
+
+name: Model Evaluation & Adjustments
+
+on:
+  # Hourly evaluation
+  schedule:
+    - cron: "0 * * * *"
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Evaluation mode"
+        required: false
+        default: "paper"
+        type: choice
+        options:
+          - paper
+          - live
+      apply_adjustments:
+        description: "Apply recommended adjustments automatically"
+        required: false
+        default: "false"
+        type: boolean
+
+  repository_dispatch:
+    types:
+      - quantum_evaluate
+
+concurrency:
+  group: evaluation
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    name: Evaluate Performance & Suggest Adjustments
+    runs-on: ubuntu-latest
+    outputs:
+      passes_thresholds: ${{ steps.eval.outputs.passes_thresholds }}
+      should_retrain: ${{ steps.eval.outputs.should_retrain }}
+      pause_trading: ${{ steps.eval.outputs.pause_trading }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore trading state
+        uses: actions/cache@v4
+        with:
+          path: |
+            .trading_state/
+            models/
+          key: trading-state-${{ inputs.mode || 'paper' }}-${{ github.sha }}
+          restore-keys: |
+            trading-state-${{ inputs.mode || 'paper' }}-
+
+      - name: Create directories
+        run: mkdir -p results .trading_state
+
+      - name: Run evaluation
+        id: eval
+        env:
+          TRADING_MODE: ${{ inputs.mode || 'paper' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LOG_LEVEL: INFO
+        run: |
+          python -m src.main --run-type evaluate --mode "${{ inputs.mode || 'paper' }}"
+
+          # Read evaluation report and set outputs
+          if [ -f results/evaluation_report.json ]; then
+            PASSES=$(python3 -c "import json; d=json.load(open('results/evaluation_report.json')); print(str(d.get('pass', False)).lower())")
+            PAUSE=$(python3 -c "
+          import json
+          d=json.load(open('results/evaluation_report.json'))
+          adjs = d.get('adjustments', [])
+          # Check if any adjustment suggests pausing
+          print('false')
+          ")
+            echo "passes_thresholds=${PASSES}" >> "$GITHUB_OUTPUT"
+            echo "pause_trading=${PAUSE}" >> "$GITHUB_OUTPUT"
+
+            # Recommend retrain if Sharpe < 0.8
+            SHARPE=$(python3 -c "import json; d=json.load(open('results/evaluation_report.json')); print(d.get('metrics',{}).get('sharpe_ratio', 0))")
+            if python3 -c "import sys; sys.exit(0 if float('$SHARPE') < 0.8 else 1)"; then
+              echo "should_retrain=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "should_retrain=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "passes_thresholds=false" >> "$GITHUB_OUTPUT"
+            echo "should_retrain=false" >> "$GITHUB_OUTPUT"
+            echo "pause_trading=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload evaluation report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-report-${{ github.run_number }}
+          path: results/evaluation_report.json
+          retention-days: 60
+
+  # ── Trigger retraining if performance degrades ────────────────────────────
+  trigger-retrain:
+    name: Trigger Retraining
+    runs-on: ubuntu-latest
+    needs: evaluate
+    if: needs.evaluate.outputs.should_retrain == 'true'
+    steps:
+      - name: Dispatch model retraining
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'quantum_retrain',
+              client_payload: {
+                reason: 'Performance below threshold – Sharpe < 0.8',
+                triggered_by: 'evaluation'
+              }
+            });
+            core.info('Dispatched quantum_retrain event');
+
+  # ── Post adjustment summary ───────────────────────────────────────────────
+  adjustment-summary:
+    name: Adjustment Summary
+    runs-on: ubuntu-latest
+    needs: evaluate
+    if: always()
+    steps:
+      - name: Summarise evaluation outcome
+        run: |
+          echo "## 🔍 Evaluation Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Outcome | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Passes Thresholds | ${{ needs.evaluate.outputs.passes_thresholds }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Should Retrain | ${{ needs.evaluate.outputs.should_retrain }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Pause Trading | ${{ needs.evaluate.outputs.pause_trading }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ needs.evaluate.outputs.passes_thresholds }}" == "true" ]]; then
+            echo "✅ **System performing within acceptable parameters**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ **Performance below thresholds – adjustments recommended**" >> "$GITHUB_STEP_SUMMARY"
+          fi

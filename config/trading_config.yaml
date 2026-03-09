@@ -1,0 +1,259 @@
+# ============================================================
+# Quantum Trading System - Configuration
+# Hyperliquid SDK + Gemini AI Orchestration
+# ============================================================
+
+# ── System ─────────────────────────────────────────────────
+system:
+  name: "Quantum Trader"
+  version: "1.0.0"
+  log_level: "INFO"           # DEBUG | INFO | WARNING | ERROR
+  timezone: "UTC"
+  state_dir: ".trading_state"
+  results_dir: "results"
+
+# ── Trading Mode ────────────────────────────────────────────
+trading:
+  mode: "paper"               # paper | live  (override via env TRADING_MODE)
+  initial_equity: 10000.0     # USD
+  base_currency: "USDC"
+
+  # Markets to trade (isolated margin per symbol)
+  markets:
+    - symbol: "BTC"
+      enabled: true
+      weight: 0.40
+    - symbol: "ETH"
+      enabled: true
+      weight: 0.30
+    - symbol: "SOL"
+      enabled: true
+      weight: 0.20
+    - symbol: "ARB"
+      enabled: true
+      weight: 0.10
+
+  # Leverage configuration (10–35x adaptive)
+  leverage:
+    min: 10
+    max: 35
+    default: 15
+    high_confidence_threshold: 0.80   # ML confidence to raise leverage
+    low_confidence_threshold: 0.55    # ML confidence to lower leverage
+    step: 5                           # Adjustment step size
+
+  # Order configuration
+  order:
+    type: "market"                    # market | limit
+    slippage_tolerance: 0.002         # 0.2%
+    reduce_only_on_close: true
+    post_only: false
+
+  # Position sizing (Kelly criterion + risk parity)
+  position_sizing:
+    method: "kelly_fractional"        # kelly_fractional | fixed_fraction | risk_parity
+    kelly_fraction: 0.25              # Use 25% of full Kelly
+    max_position_pct: 0.30            # Max 30% equity in single position
+    min_position_usd: 100.0
+
+  # Risk management
+  risk:
+    max_drawdown_pct: 0.20            # 20% max drawdown before halting
+    daily_loss_limit_pct: 0.05        # 5% daily loss limit
+    max_open_positions: 4
+    stop_loss_atr_multiplier: 2.0
+    take_profit_atr_multiplier: 3.0
+    trailing_stop_pct: 0.015          # 1.5% trailing stop
+
+# ── Data Fetching ────────────────────────────────────────────
+data:
+  hyperliquid_api_url: "https://api.hyperliquid.xyz/info"
+  hyperliquid_ws_url: "wss://api.hyperliquid.xyz/ws"
+
+  # Candle intervals to fetch
+  intervals:
+    primary: "15m"                    # Primary trading timeframe
+    secondary: "1h"                   # Higher timeframe for trend
+    macro: "4h"                       # Macro context
+
+  # Lookback periods for feature engineering
+  lookback:
+    candles: 500                      # Number of candles for features
+    funding_periods: 48               # Funding rate history
+    trade_depth: 20                   # Order book levels
+
+  # Cache settings
+  cache:
+    enabled: true
+    ttl_seconds: 60                   # Cache TTL for market data
+
+# ── ML Models ────────────────────────────────────────────────
+ml:
+  # Ensemble of models
+  models:
+    lstm:
+      enabled: true
+      weight: 0.35
+      sequence_length: 60
+      units: [128, 64, 32]
+      dropout: 0.2
+      epochs: 100
+      batch_size: 32
+      learning_rate: 0.001
+
+    xgboost:
+      enabled: true
+      weight: 0.35
+      n_estimators: 500
+      max_depth: 6
+      learning_rate: 0.05
+      subsample: 0.8
+      colsample_bytree: 0.8
+      min_child_weight: 3
+
+    gradient_boost:
+      enabled: true
+      weight: 0.15
+      n_estimators: 200
+      max_depth: 5
+      learning_rate: 0.05
+
+    random_forest:
+      enabled: true
+      weight: 0.15
+      n_estimators: 200
+      max_depth: 10
+
+  # Feature engineering
+  features:
+    technical_indicators:
+      - rsi_14
+      - rsi_7
+      - macd
+      - macd_signal
+      - macd_hist
+      - ema_9
+      - ema_21
+      - ema_50
+      - ema_200
+      - bb_upper
+      - bb_middle
+      - bb_lower
+      - bb_bandwidth
+      - atr_14
+      - adx_14
+      - obv
+      - vwap
+      - stochastic_k
+      - stochastic_d
+      - cci_20
+      - williams_r
+      - ichimoku_tenkan
+      - ichimoku_kijun
+      - ichimoku_senkou_a
+      - ichimoku_senkou_b
+    market_microstructure:
+      - bid_ask_spread
+      - order_book_imbalance
+      - trade_flow_imbalance
+      - funding_rate
+      - open_interest
+      - liquidation_levels
+    cross_market:
+      - btc_dominance_signal
+      - correlation_matrix_eigenvalue
+
+  # Signal thresholds
+  signals:
+    long_threshold: 0.60              # P(long) > 60% to open long
+    short_threshold: 0.60             # P(short) > 60% to open short
+    close_threshold: 0.45             # Close when confidence < 45%
+    min_ensemble_agreement: 0.60      # Min fraction of models must agree
+
+  # Training settings
+  training:
+    val_split: 0.15
+    test_split: 0.15
+    early_stopping_patience: 15
+    model_save_dir: "models"
+    retrain_interval_hours: 24        # Retrain every 24 hours
+
+# ── Gemini AI Orchestrator ────────────────────────────────────
+gemini:
+  model: "gemini-1.5-pro"
+  temperature: 0.1                    # Low temperature for consistent decisions
+  max_output_tokens: 2048
+  safety_settings: strict
+
+  # Orchestration prompts
+  analysis_context_window: 10        # Number of recent trades to include
+  market_regime_lookback: 100        # Candles for regime detection
+
+  # Gemini roles
+  roles:
+    market_analyst: true             # Analyze market conditions
+    risk_advisor: true               # Evaluate risk before each trade
+    performance_reviewer: true       # Review and suggest adjustments
+    leverage_adjuster: true          # Recommend leverage changes
+
+# ── Paper Broker ─────────────────────────────────────────────
+paper_broker:
+  initial_equity: 10000.0
+  taker_fee: 0.00045                  # 0.045% taker fee
+  maker_fee: 0.00020                  # 0.020% maker fee
+  funding_enabled: true
+  liquidation_enabled: true
+  slippage_model: "realistic"         # none | fixed | realistic
+  slippage_bps: 5                     # 5 basis points baseline slippage
+
+  # Training sessions
+  training:
+    warmup_candles: 200               # Skip first N candles in training
+    walk_forward_periods: 5          # Walk-forward validation splits
+    min_trades_for_eval: 30
+
+# ── Evaluation ───────────────────────────────────────────────
+evaluation:
+  metrics:
+    - total_return_pct
+    - annualized_return_pct
+    - sharpe_ratio
+    - sortino_ratio
+    - calmar_ratio
+    - max_drawdown_pct
+    - win_rate
+    - profit_factor
+    - avg_trade_duration_hours
+    - trades_per_day
+    - avg_leverage_used
+
+  thresholds:
+    min_sharpe: 1.0
+    min_win_rate: 0.45
+    max_drawdown_pct: 0.25
+    min_profit_factor: 1.20
+
+  # Auto-adjustment triggers
+  auto_adjust:
+    enabled: true
+    evaluation_window_trades: 50
+    adjust_if_sharpe_below: 0.8
+    adjust_if_drawdown_above: 0.15
+    leverage_reduce_step: 5
+    leverage_increase_step: 3
+
+# ── Notifications ─────────────────────────────────────────────
+notifications:
+  enabled: true
+  channels:
+    github_actions_summary: true
+    log_file: true
+  events:
+    - trade_opened
+    - trade_closed
+    - stop_loss_hit
+    - take_profit_hit
+    - daily_summary
+    - model_retrained
+    - risk_limit_breached
+    - leverage_adjusted
