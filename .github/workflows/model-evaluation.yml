@@ -41,6 +41,8 @@ jobs:
   evaluate:
     name: Evaluate Performance & Suggest Adjustments
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       passes_thresholds: ${{ steps.eval.outputs.passes_thresholds }}
       should_retrain: ${{ steps.eval.outputs.should_retrain }}
@@ -87,12 +89,20 @@ jobs:
           if [ -f results/evaluation_report.json ]; then
             PASSES=$(python3 -c "import json; d=json.load(open('results/evaluation_report.json')); print(str(d.get('pass', False)).lower())")
             PAUSE=$(python3 -c "
-          import json
-          d=json.load(open('results/evaluation_report.json'))
-          adjs = d.get('adjustments', [])
-          # Check if any adjustment suggests pausing
-          print('false')
-          ")
+import json, sys
+try:
+    d = json.load(open('results/evaluation_report.json'))
+    m = d.get('metrics', {})
+    max_dd = m.get('max_drawdown_pct', 0)
+    sharpe  = m.get('sharpe_ratio', 1)
+    # Pause if drawdown > 25% or Sharpe deeply negative
+    if max_dd > 0.25 or sharpe < -0.5:
+        print('true')
+    else:
+        print('false')
+except Exception:
+    print('false')
+")
             echo "passes_thresholds=${PASSES}" >> "$GITHUB_OUTPUT"
             echo "pause_trading=${PAUSE}" >> "$GITHUB_OUTPUT"
 
@@ -121,6 +131,8 @@ jobs:
   trigger-retrain:
     name: Trigger Retraining
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs: evaluate
     if: needs.evaluate.outputs.should_retrain == 'true'
     steps:
@@ -143,6 +155,7 @@ jobs:
   adjustment-summary:
     name: Adjustment Summary
     runs-on: ubuntu-latest
+    permissions: {}
     needs: evaluate
     if: always()
     steps:

@@ -37,6 +37,8 @@ jobs:
     name: Train ML Models
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
@@ -116,6 +118,8 @@ jobs:
   trigger-signal-cycle:
     name: Trigger Signal Cycle
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs: train
     if: success()
     steps:

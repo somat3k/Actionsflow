@@ -33,6 +33,7 @@ jobs:
   safety-check:
     name: Safety Gate
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       safe_to_trade: ${{ steps.check.outputs.safe_to_trade }}
     steps:
@@ -76,6 +77,8 @@ jobs:
   live-trade:
     name: Execute Live Trades
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: safety-check
     if: needs.safety-check.outputs.safe_to_trade == 'true'
     environment: live-trading    # Requires environment approval if configured
@@ -150,6 +153,8 @@ jobs:
   post-trade-eval:
     name: Post-Trade Risk Check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: live-trade
     if: always() && needs.safety-check.outputs.safe_to_trade == 'true'
     steps:

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+wheels/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Trading system runtime files
+.trading_state/
+models/
+results/
+
+# Secrets & .env
+.env
+*.env
+secrets.yaml
+
+# OS
+.DS_Store
+Thumbs.db

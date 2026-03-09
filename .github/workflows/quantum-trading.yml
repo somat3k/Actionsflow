@@ -63,6 +63,7 @@ jobs:
   setup:
     name: Setup & Validate
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       trading_mode: ${{ steps.params.outputs.trading_mode }}
       run_type: ${{ steps.params.outputs.run_type }}
@@ -158,6 +159,7 @@ jobs:
   notify-failure:
     name: Notify on Failure
     runs-on: ubuntu-latest
+    permissions: {}
     needs: [setup, execute]
     if: failure()
     steps:
