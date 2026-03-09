@@ -1,0 +1,249 @@
+"""
+Quantum Trading System – Hyperliquid Data Fetcher
+Fetches OHLCV candles, order book snapshots, funding rates, and open interest
+from the Hyperliquid public REST API.
+"""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+
+import requests
+
+from src.config import AppConfig, DataConfig
+from src.utils import (
+    add_all_features,
+    candles_to_dataframe,
+    get_logger,
+    interval_to_ms,
+    utc_now_ms,
+)
+
+import pandas as pd
+
+log = get_logger(__name__)
+
+# Maximum candles per single API request (Hyperliquid limit)
+_MAX_CANDLES_PER_REQUEST = 5000
+_REQUEST_TIMEOUT = 30  # seconds
+
+
+class HyperliquidDataFetcher:
+    """Fetches all market data needed by the trading system from Hyperliquid."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self.cfg = config
+        self.api_url = config.data.hyperliquid_api_url
+        self._session = requests.Session()
+        self._session.headers.update({"Content-Type": "application/json"})
+
+    # ── Public interface ───────────────────────────────────────────────────────
+
+    def fetch_candles(
+        self,
+        symbol: str,
+        interval: str,
+        lookback_candles: Optional[int] = None,
+        start_ms: Optional[int] = None,
+        end_ms: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Fetch OHLCV candles and enrich with technical indicators."""
+        n = lookback_candles or self.cfg.data.lookback_candles
+        end_ms = end_ms or utc_now_ms()
+        start_ms = start_ms or (end_ms - n * interval_to_ms(interval))
+
+        raw = self._fetch_candle_snapshot(symbol, interval, start_ms, end_ms)
+        if not raw:
+            log.warning("No candle data returned for %s@%s", symbol, interval)
+            return pd.DataFrame()
+
+        df = candles_to_dataframe(raw)
+        df = add_all_features(df)
+        log.info(
+            "Fetched %d candles for %s@%s (%s → %s)",
+            len(df),
+            symbol,
+            interval,
+            df.index[0] if len(df) else "N/A",
+            df.index[-1] if len(df) else "N/A",
+        )
+        return df
+
+    def fetch_multi_timeframe(self, symbol: str) -> Dict[str, pd.DataFrame]:
+        """Fetch candles for primary, secondary, and macro timeframes."""
+        cfg = self.cfg.data
+        frames: Dict[str, pd.DataFrame] = {}
+        for tf in [cfg.primary_interval, cfg.secondary_interval, cfg.macro_interval]:
+            frames[tf] = self.fetch_candles(symbol, tf)
+        return frames
+
+    def fetch_order_book(self, symbol: str) -> Dict[str, Any]:
+        """Fetch level-2 order book snapshot."""
+        payload = {"type": "l2Book", "coin": symbol}
+        data = self._post(payload)
+        if not data:
+            return {"bids": [], "asks": [], "symbol": symbol}
+
+        levels = data.get("levels", [[], []])
+        bids = levels[0] if len(levels) > 0 else []
+        asks = levels[1] if len(levels) > 1 else []
+
+        result = {
+            "symbol": symbol,
+            "timestamp_ms": utc_now_ms(),
+            "bids": [{"price": float(b["px"]), "size": float(b["sz"])} for b in bids],
+            "asks": [{"price": float(a["px"]), "size": float(a["sz"])} for a in asks],
+        }
+
+        if result["bids"] and result["asks"]:
+            best_bid = result["bids"][0]["price"]
+            best_ask = result["asks"][0]["price"]
+            mid = (best_bid + best_ask) / 2
+            result["mid_price"] = mid
+            result["bid_ask_spread"] = best_ask - best_bid
+            result["bid_ask_spread_bps"] = (best_ask - best_bid) / mid * 10_000
+
+            total_bid_size = sum(b["size"] for b in result["bids"][:10])
+            total_ask_size = sum(a["size"] for a in result["asks"][:10])
+            denom = total_bid_size + total_ask_size
+            result["order_book_imbalance"] = (
+                (total_bid_size - total_ask_size) / denom if denom else 0.0
+            )
+
+        return result
+
+    def fetch_funding_rate(self, symbol: str) -> Dict[str, Any]:
+        """Fetch current funding rate for a perpetual market."""
+        payload = {"type": "metaAndAssetCtxs"}
+        data = self._post(payload)
+        if not isinstance(data, list) or len(data) < 2:
+            return {"symbol": symbol, "funding_rate": 0.0, "open_interest": 0.0}
+
+        meta = data[0]
+        asset_ctxs = data[1]
+        universe = meta.get("universe", [])
+
+        idx: Optional[int] = None
+        for i, asset in enumerate(universe):
+            if asset.get("name", "").upper() == symbol.upper():
+                idx = i
+                break
+
+        if idx is None or idx >= len(asset_ctxs):
+            return {"symbol": symbol, "funding_rate": 0.0, "open_interest": 0.0}
+
+        ctx = asset_ctxs[idx]
+        return {
+            "symbol": symbol,
+            "timestamp_ms": utc_now_ms(),
+            "funding_rate": float(ctx.get("funding", 0.0)),
+            "open_interest": float(ctx.get("openInterest", 0.0)),
+            "mark_price": float(ctx.get("markPx", 0.0)),
+            "oracle_price": float(ctx.get("oraclePx", 0.0)),
+            "mid_price": float(ctx.get("midPx", 0.0)),
+        }
+
+    def fetch_recent_trades(self, symbol: str, limit: int = 200) -> List[Dict[str, Any]]:
+        """Fetch recent public trades."""
+        payload = {"type": "recentTrades", "coin": symbol}
+        data = self._post(payload)
+        if not isinstance(data, list):
+            return []
+        trades = []
+        for t in data[-limit:]:
+            trades.append(
+                {
+                    "timestamp_ms": int(t.get("time", 0)),
+                    "price": float(t.get("px", 0)),
+                    "size": float(t.get("sz", 0)),
+                    "side": t.get("side", ""),
+                }
+            )
+        return trades
+
+    def compute_trade_flow_imbalance(
+        self, trades: List[Dict[str, Any]], window: int = 100
+    ) -> float:
+        """Compute buy/sell volume imbalance from recent trades."""
+        if not trades:
+            return 0.0
+        recent = trades[-window:]
+        buy_vol = sum(t["size"] for t in recent if t["side"] == "B")
+        sell_vol = sum(t["size"] for t in recent if t["side"] == "A")
+        total = buy_vol + sell_vol
+        return (buy_vol - sell_vol) / total if total > 0 else 0.0
+
+    def fetch_all_market_data(self, symbol: str) -> Dict[str, Any]:
+        """Fetch complete market snapshot for a symbol."""
+        mtf = self.fetch_multi_timeframe(symbol)
+        order_book = self.fetch_order_book(symbol)
+        funding = self.fetch_funding_rate(symbol)
+        trades = self.fetch_recent_trades(symbol)
+        tfi = self.compute_trade_flow_imbalance(trades)
+
+        return {
+            "symbol": symbol,
+            "timestamp_ms": utc_now_ms(),
+            "candles": mtf,
+            "order_book": order_book,
+            "funding": funding,
+            "trade_flow_imbalance": tfi,
+        }
+
+    # ── Private helpers ────────────────────────────────────────────────────────
+
+    def _fetch_candle_snapshot(
+        self, symbol: str, interval: str, start_ms: int, end_ms: int
+    ) -> List[Dict]:
+        """Fetch candles in paginated chunks if needed."""
+        all_candles: List[Dict] = []
+        chunk_ms = _MAX_CANDLES_PER_REQUEST * interval_to_ms(interval)
+        current_start = start_ms
+
+        while current_start < end_ms:
+            current_end = min(current_start + chunk_ms, end_ms)
+            payload = {
+                "type": "candleSnapshot",
+                "req": {
+                    "coin": symbol,
+                    "interval": interval,
+                    "startTime": current_start,
+                    "endTime": current_end,
+                },
+            }
+            chunk = self._post(payload)
+            if not isinstance(chunk, list) or not chunk:
+                break
+            all_candles.extend(chunk)
+            current_start = current_end + interval_to_ms(interval)
+            if len(chunk) < 10:
+                break
+
+        return all_candles
+
+    def _post(self, payload: Dict) -> Any:
+        """POST to Hyperliquid info endpoint with retry logic."""
+        retries = 3
+        for attempt in range(retries):
+            try:
+                response = self._session.post(
+                    self.api_url, json=payload, timeout=_REQUEST_TIMEOUT
+                )
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException as exc:
+                if attempt == retries - 1:
+                    log.error("Hyperliquid API error (payload=%s): %s", payload.get("type"), exc)
+                    return None
+                wait = 2 ** attempt
+                log.warning(
+                    "Hyperliquid API attempt %d/%d failed, retrying in %ds: %s",
+                    attempt + 1,
+                    retries,
+                    wait,
+                    exc,
+                )
+                time.sleep(wait)
+        return None

@@ -1,0 +1,186 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Live Trader Commander
+#  Executes real perpetuals trades on Hyperliquid.
+#  Protected by: manual approval gate, live-trading flag, risk limits.
+#  Only runs when LIVE_TRADING_ENABLED = 'true' in repository variables.
+# ══════════════════════════════════════════════════════════════════════════════
+
+name: Live Trader Commander
+
+on:
+  # Repository dispatch (triggered by paper-trading signal after validation)
+  repository_dispatch:
+    types:
+      - live_trade_signal
+
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Comma-separated symbols to trade"
+        required: false
+        default: "BTC,ETH"
+      confirm_live:
+        description: "Type 'CONFIRM_LIVE' to enable live trading"
+        required: true
+        default: ""
+
+concurrency:
+  group: live-trader
+  cancel-in-progress: false
+
+jobs:
+  # ── Safety gate ────────────────────────────────────────────────────────────
+  safety-check:
+    name: Safety Gate
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      safe_to_trade: ${{ steps.check.outputs.safe_to_trade }}
+    steps:
+      - name: Validate live trading prerequisites
+        id: check
+        run: |
+          SAFE="false"
+          REASON=""
+
+          # Manual trigger: require explicit confirmation
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ "${{ inputs.confirm_live }}" != "CONFIRM_LIVE" ]]; then
+              REASON="Confirmation string not provided"
+            elif [[ "${{ vars.LIVE_TRADING_ENABLED }}" != "true" ]]; then
+              REASON="LIVE_TRADING_ENABLED variable not set to 'true'"
+            elif [[ -z "${{ secrets.HYPERLIQUID_PRIVATE_KEY }}" ]]; then
+              REASON="HYPERLIQUID_PRIVATE_KEY secret not configured"
+            else
+              SAFE="true"
+            fi
+          # Repository dispatch: check flag
+          elif [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            if [[ "${{ vars.LIVE_TRADING_ENABLED }}" != "true" ]]; then
+              REASON="LIVE_TRADING_ENABLED variable not set to 'true'"
+            elif [[ -z "${{ secrets.HYPERLIQUID_PRIVATE_KEY }}" ]]; then
+              REASON="HYPERLIQUID_PRIVATE_KEY secret not configured"
+            else
+              SAFE="true"
+            fi
+          fi
+
+          echo "safe_to_trade=${SAFE}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${SAFE}" == "true" ]]; then
+            echo "✅ Safety check passed – proceeding with live trading" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "🚫 Safety check failed: ${REASON}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ── Live trading ───────────────────────────────────────────────────────────
+  live-trade:
+    name: Execute Live Trades
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: safety-check
+    if: needs.safety-check.outputs.safe_to_trade == 'true'
+    environment: live-trading    # Requires environment approval if configured
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore ML models
+        uses: actions/cache@v4
+        with:
+          path: models/
+          key: ml-models-${{ github.sha }}
+          restore-keys: |
+            ml-models-
+
+      - name: Restore live trading state
+        uses: actions/cache@v4
+        with:
+          path: .trading_state/
+          key: live-state-${{ github.sha }}
+          restore-keys: |
+            live-state-
+
+      - name: Create directories
+        run: mkdir -p .trading_state results
+
+      - name: Execute live trading cycle
+        id: live-trade
+        env:
+          TRADING_MODE: live
+          LIVE_TRADING_ENABLED: "true"
+          HYPERLIQUID_PRIVATE_KEY: ${{ secrets.HYPERLIQUID_PRIVATE_KEY }}
+          HYPERLIQUID_WALLET_ADDRESS: ${{ secrets.HYPERLIQUID_WALLET_ADDRESS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LOG_LEVEL: INFO
+        run: |
+          echo "## ⚡ Live Trading Cycle" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Start:** $(date -u)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          python -m src.main --run-type signal --mode live
+
+      - name: Save live trading state
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .trading_state/
+          key: live-state-${{ github.sha }}
+
+      - name: Upload trade log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-trades-${{ github.run_number }}
+          path: |
+            .trading_state/live_trades.json
+            results/
+          retention-days: 90
+
+  # ── Post-trade evaluation ─────────────────────────────────────────────────
+  post-trade-eval:
+    name: Post-Trade Risk Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: live-trade
+    if: always() && needs.safety-check.outputs.safe_to_trade == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Restore state
+        uses: actions/cache@v4
+        with:
+          path: .trading_state/
+          key: live-state-${{ github.sha }}
+          restore-keys: |
+            live-state-
+
+      - name: Run post-trade evaluation
+        env:
+          TRADING_MODE: live
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python -m src.main --run-type evaluate --mode live
