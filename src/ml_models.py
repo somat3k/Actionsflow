@@ -182,7 +182,6 @@ class QuantumEnsemble:
                 subsample=0.8,
                 colsample_bytree=0.8,
                 min_child_weight=3,
-                use_label_encoder=False,
                 eval_metric="mlogloss",
                 verbosity=0,
                 n_jobs=-1,
@@ -362,7 +361,7 @@ class QuantumEnsemble:
         with open(prefix / "feature_cols.json", "w") as fh:
             json.dump(self.feature_cols, fh)
         if self.xgb_model and _XGB_AVAILABLE:
-            self.xgb_model.save_model(str(prefix / "xgb.json"))
+            self.xgb_model.get_booster().save_model(str(prefix / "xgb.json"))
         if self.gb_model:
             joblib.dump(self.gb_model, prefix / "gb.pkl")
         if self.rf_model:
