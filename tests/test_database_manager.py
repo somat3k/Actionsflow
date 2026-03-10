@@ -55,3 +55,7 @@ def test_cache_set_and_get(tmp_path):
 
     cached = db.get_cache("evaluation:last_metrics")
     assert cached == {"pass": True, "sharpe_ratio": 1.23}
+
+    db.set_cache("evaluation:last_metrics", {"pass": False, "sharpe_ratio": -0.5})
+    updated = db.get_cache("evaluation:last_metrics")
+    assert updated == {"pass": False, "sharpe_ratio": -0.5}

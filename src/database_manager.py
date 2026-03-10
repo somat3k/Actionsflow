@@ -57,6 +57,7 @@ class DatabaseManager:
         status: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Insert a completed workflow task event with optional JSON metadata."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -69,13 +70,14 @@ class DatabaseManager:
                     run_type,
                     mode,
                     status,
-                    json.dumps(metadata or {}, default=str),
+                    json.dumps(metadata or {}),
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
             conn.commit()
 
-    def set_cache(self, key: str, value: Dict[str, Any]) -> None:
+    def set_cache(self, key: str, value: Any) -> None:
+        """Upsert a JSON-serializable cache value for a key."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -88,13 +90,14 @@ class DatabaseManager:
                 """,
                 (
                     key,
-                    json.dumps(value, default=str),
+                    json.dumps(value),
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
             conn.commit()
 
-    def get_cache(self, key: str) -> Optional[Dict[str, Any]]:
+    def get_cache(self, key: str) -> Optional[Any]:
+        """Return cached value for a key, or None when the key is not present."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT cache_value_json FROM task_cache WHERE cache_key = ?",
