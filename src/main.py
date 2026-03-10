@@ -17,11 +17,12 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.config import load_config
+from src.config import AppConfig, load_config
 from src.data_fetcher import HyperliquidDataFetcher
 from src.database_manager import DatabaseManager
 from src.evaluator import Evaluator, compute_metrics
@@ -50,6 +51,91 @@ def _print_github_summary(text: str) -> None:
 def _get_hyperliquid_private_key() -> Optional[str]:
     """Read Hyperliquid private key from supported environment variable names."""
     return os.environ.get("HYPERLIQUID_SECRET") or os.environ.get("HYPERLIQUID_PRIVATE_KEY")
+
+
+def _parse_cached_timestamp(value: Any) -> Optional[datetime]:
+    """Parse an ISO-8601 timestamp, assuming naive values are UTC."""
+    if not value:
+        return None
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _get_last_training_time(db: DatabaseManager, symbol: str) -> Optional[datetime]:
+    cache_value = db.get_cache("training:last_run")
+    if isinstance(cache_value, dict):
+        return _parse_cached_timestamp(cache_value.get(symbol))
+    # Legacy cache stored a single timestamp for all symbols.
+    return _parse_cached_timestamp(cache_value)
+
+
+def _should_retrain(cfg: AppConfig, db: DatabaseManager, symbol: str) -> bool:
+    """Return True when retraining is due/missing; interval <= 0 disables retraining."""
+    interval_hours = cfg.ml.retrain_interval_hours
+    if interval_hours <= 0:
+        return False
+    last_training = _get_last_training_time(db, symbol)
+    if last_training is None:
+        return True
+    return utc_now() - last_training >= timedelta(hours=interval_hours)
+
+
+def _record_training_time(db: DatabaseManager, symbols: List[str]) -> None:
+    cache_value = db.get_cache("training:last_run")
+    last_runs: Dict[str, str] = cache_value if isinstance(cache_value, dict) else {}
+    timestamp = utc_now().isoformat()
+    for symbol in symbols:
+        last_runs[symbol] = timestamp
+    db.set_cache("training:last_run", last_runs)
+
+
+def _ensure_model_ready(
+    cfg: AppConfig,
+    db: DatabaseManager,
+    fetcher: HyperliquidDataFetcher,
+    ensemble: Any,
+    symbol: str,
+) -> bool:
+    """Return True when a model is ready; False if load/training cannot provide one.
+
+    Records training timestamps when retraining succeeds.
+    """
+    loaded = ensemble.load(symbol)
+    is_scheduled_retrain_due = _should_retrain(cfg, db, symbol)
+    needs_initial_train = not loaded
+    should_train = is_scheduled_retrain_due or needs_initial_train
+    if should_train:
+        action = "Training" if needs_initial_train else "Retraining"
+        log.info("%s model for %s ...", action, symbol)
+        retrain_df = fetcher.fetch_candles(
+            symbol,
+            cfg.data.primary_interval,
+            lookback_candles=cfg.data.lookback_candles,
+        )
+        if retrain_df.empty:
+            log.warning("No data for %s – skipping retraining", symbol)
+        else:
+            try:
+                ensemble.train(retrain_df, symbol=symbol)
+            except Exception as exc:
+                log.warning(
+                    "%s failed for %s (%s): %s",
+                    action,
+                    symbol,
+                    type(exc).__name__,
+                    exc,
+                )
+                return loaded
+            _record_training_time(db, [symbol])
+            loaded = True
+    return loaded
 
 
 def run_training(config_path: Optional[Path] = None) -> int:
@@ -96,6 +182,8 @@ def run_training(config_path: Optional[Path] = None) -> int:
         summary += row
     _print_github_summary(summary)
     db.set_cache("training:last_scores", results)
+    if results:
+        _record_training_time(db, list(results.keys()))
     db.record_task_completion(
         task_name="model_training",
         run_type="train-models",
@@ -134,8 +222,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
             continue
         symbol = market.symbol
 
-        # Load model
-        if not ensemble.load(symbol):
+        if not _ensure_model_ready(cfg, db, fetcher, ensemble, symbol):
             log.warning("No model for %s – skipping", symbol)
             continue
 
@@ -302,7 +389,7 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
             continue
         symbol = market.symbol
 
-        if not ensemble.load(symbol):
+        if not _ensure_model_ready(cfg, db, fetcher, ensemble, symbol):
             log.warning("No model for %s – skipping", symbol)
             continue
 
