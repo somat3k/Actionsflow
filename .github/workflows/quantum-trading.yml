@@ -167,43 +167,43 @@ jobs:
           MIN_TRADES_PER_DAY="${{ needs.setup.outputs.min_trades_per_day }}"
           IFS=',' read -ra INTERVALS <<< "${INTERVAL_SEQUENCE}"
 
-          FIRST_INTERVAL=""
+          VALID_INTERVALS=()
           for interval in "${INTERVALS[@]}"; do
             TRIMMED="$(echo "$interval" | xargs)"
             [[ -z "${TRIMMED}" ]] && continue
-            if [[ -z "${FIRST_INTERVAL}" ]]; then
-              FIRST_INTERVAL="${TRIMMED}"
+            if [[ ! "${TRIMMED}" =~ ^[1-9][0-9]*[mh]$ ]]; then
+              echo "Invalid interval format '${TRIMMED}'. Expected values like 1m, 5m, 1h."
+              exit 1
             fi
+            VALID_INTERVALS+=("${TRIMMED}")
+          done
 
-            export PRIMARY_INTERVAL="${TRIMMED}"
-            export SECONDARY_INTERVAL="5m"
-            export MACRO_INTERVAL="15m"
-            echo "Running signal cycle for interval ${TRIMMED}"
+          if [[ "${#VALID_INTERVALS[@]}" -eq 0 ]]; then
+            VALID_INTERVALS=("1m")
+          fi
+
+          FIRST_INTERVAL="${VALID_INTERVALS[0]}"
+          SECONDARY_DEFAULT="${VALID_INTERVALS[1]:-${FIRST_INTERVAL}}"
+          MACRO_DEFAULT="${VALID_INTERVALS[2]:-${SECONDARY_DEFAULT}}"
+
+          for interval in "${VALID_INTERVALS[@]}"; do
+            export PRIMARY_INTERVAL="${interval}"
+            export SECONDARY_INTERVAL="${SECONDARY_DEFAULT}"
+            export MACRO_INTERVAL="${MACRO_DEFAULT}"
+            echo "Running signal cycle for interval ${interval}"
             python -m src.main --run-type signal --mode "${{ needs.setup.outputs.trading_mode }}"
           done
 
-          if [[ -z "${FIRST_INTERVAL}" ]]; then
-            FIRST_INTERVAL="1m"
+          MARKETS_COUNT=$(python -c "from src.config import load_config; cfg = load_config(); print(sum(1 for m in cfg.trading.markets if m.enabled))")
+          if [[ ! "${MARKETS_COUNT}" =~ ^[0-9]+$ || "${MARKETS_COUNT}" -le 0 ]]; then
+            echo "Failed to resolve a valid enabled market count: '${MARKETS_COUNT}'"
+            exit 1
           fi
 
-          INTERVAL_MINUTES="${FIRST_INTERVAL%m}"
-          if [[ "${FIRST_INTERVAL}" == *h ]]; then
-            INTERVAL_HOURS="${FIRST_INTERVAL%h}"
-            INTERVAL_MINUTES="$((INTERVAL_HOURS * 60))"
-          fi
-          if [[ -z "${INTERVAL_MINUTES}" || "${INTERVAL_MINUTES}" -le 0 ]]; then
-            INTERVAL_MINUTES=1
-          fi
-
-          MARKETS_COUNT=$(python - <<'PY'
-from src.config import load_config
-cfg = load_config()
-print(sum(1 for m in cfg.trading.markets if m.enabled))
-PY
-)
-          EXPECTED_TRADES_PER_DAY=$((MARKETS_COUNT * (1440 / INTERVAL_MINUTES)))
+          EXPECTED_TRADES_PER_DAY=$(python -c "markets = int('${MARKETS_COUNT}'); intervals = [i.strip() for i in '${INTERVAL_SEQUENCE}'.split(',') if i.strip()]; to_minutes = lambda iv: int(iv[:-1]) * 60 if iv.endswith('h') else int(iv[:-1]); projected = sum(markets * (1440.0 / to_minutes(iv)) for iv in intervals); print(projected if projected > 0 else markets * 1440.0)")
           echo "- **Projected trades/day:** ${EXPECTED_TRADES_PER_DAY}" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "${EXPECTED_TRADES_PER_DAY}" -lt "${MIN_TRADES_PER_DAY}" ]]; then
+          if ! python -c "import sys; projected = float('${EXPECTED_TRADES_PER_DAY}'); required = float('${MIN_TRADES_PER_DAY}'); sys.exit(0 if projected >= required else 1)"
+          then
             echo "Projected trades/day ${EXPECTED_TRADES_PER_DAY} is below required minimum ${MIN_TRADES_PER_DAY}"
             exit 1
           fi
