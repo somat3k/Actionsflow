@@ -22,7 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.config import load_config
+from src.config import AppConfig, load_config
 from src.data_fetcher import HyperliquidDataFetcher
 from src.database_manager import DatabaseManager
 from src.evaluator import Evaluator, compute_metrics
@@ -54,6 +54,7 @@ def _get_hyperliquid_private_key() -> Optional[str]:
 
 
 def _parse_cached_timestamp(value: Any) -> Optional[datetime]:
+    """Parse an ISO-8601 timestamp, assuming naive values are UTC."""
     if not value:
         return None
     if not isinstance(value, str):
@@ -74,7 +75,7 @@ def _get_last_training_time(db: DatabaseManager, symbol: str) -> Optional[dateti
     return _parse_cached_timestamp(cache_value)
 
 
-def _should_retrain(cfg, db: DatabaseManager, symbol: str) -> bool:
+def _should_retrain(cfg: AppConfig, db: DatabaseManager, symbol: str) -> bool:
     interval_hours = cfg.ml.retrain_interval_hours
     if interval_hours <= 0:
         return False
@@ -91,6 +92,35 @@ def _record_training_time(db: DatabaseManager, symbols: List[str]) -> None:
     for symbol in symbols:
         last_runs[symbol] = timestamp
     db.set_cache("training:last_run", last_runs)
+
+
+def _ensure_model_ready(
+    cfg: AppConfig,
+    db: DatabaseManager,
+    fetcher: HyperliquidDataFetcher,
+    ensemble: Any,
+    symbol: str,
+) -> bool:
+    loaded = ensemble.load(symbol)
+    needs_retrain = _should_retrain(cfg, db, symbol) or not loaded
+    if needs_retrain:
+        log.info("Retraining model for %s …", symbol)
+        retrain_df = fetcher.fetch_candles(
+            symbol,
+            cfg.data.primary_interval,
+            lookback_candles=cfg.data.lookback_candles,
+        )
+        if retrain_df.empty:
+            log.warning("No data for %s – skipping retraining", symbol)
+        else:
+            try:
+                ensemble.train(retrain_df, symbol=symbol)
+            except Exception as exc:
+                log.warning("Retraining failed for %s: %s", symbol, exc)
+                return loaded
+            _record_training_time(db, [symbol])
+            loaded = True
+    return loaded
 
 
 def run_training(config_path: Optional[Path] = None) -> int:
@@ -177,28 +207,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
             continue
         symbol = market.symbol
 
-        loaded = ensemble.load(symbol)
-        needs_retrain = _should_retrain(cfg, db, symbol) or not loaded
-        if needs_retrain:
-            log.info("Retraining model for %s …", symbol)
-            retrain_df = fetcher.fetch_candles(
-                symbol,
-                cfg.data.primary_interval,
-                lookback_candles=cfg.data.lookback_candles,
-            )
-            if retrain_df.empty:
-                log.warning("No data for %s – skipping retraining", symbol)
-            else:
-                try:
-                    ensemble.train(retrain_df, symbol=symbol)
-                except Exception as exc:
-                    log.warning("Retraining failed for %s: %s", symbol, exc)
-                    if not loaded:
-                        continue
-                else:
-                    _record_training_time(db, [symbol])
-                    loaded = True
-        if not loaded:
+        if not _ensure_model_ready(cfg, db, fetcher, ensemble, symbol):
             log.warning("No model for %s – skipping", symbol)
             continue
 
@@ -365,28 +374,7 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
             continue
         symbol = market.symbol
 
-        loaded = ensemble.load(symbol)
-        needs_retrain = _should_retrain(cfg, db, symbol) or not loaded
-        if needs_retrain:
-            log.info("Retraining model for %s …", symbol)
-            retrain_df = fetcher.fetch_candles(
-                symbol,
-                cfg.data.primary_interval,
-                lookback_candles=cfg.data.lookback_candles,
-            )
-            if retrain_df.empty:
-                log.warning("No data for %s – skipping retraining", symbol)
-            else:
-                try:
-                    ensemble.train(retrain_df, symbol=symbol)
-                except Exception as exc:
-                    log.warning("Retraining failed for %s: %s", symbol, exc)
-                    if not loaded:
-                        continue
-                else:
-                    _record_training_time(db, [symbol])
-                    loaded = True
-        if not loaded:
+        if not _ensure_model_ready(cfg, db, fetcher, ensemble, symbol):
             log.warning("No model for %s – skipping", symbol)
             continue
 
