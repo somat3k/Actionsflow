@@ -102,7 +102,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: models/
-          key: ml-models-${{ github.sha }}
+          key: ml-models-${{ github.ref_name }}
           restore-keys: |
             ml-models-
 
@@ -110,7 +110,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .trading_state/
-          key: live-state-${{ github.sha }}
+          key: live-state-${{ github.ref_name }}
           restore-keys: |
             live-state-
 
@@ -137,7 +137,7 @@ jobs:
         if: always()
         with:
           path: .trading_state/
-          key: live-state-${{ github.sha }}
+          key: live-state-${{ github.ref_name }}
 
       - name: Upload trade log
         uses: actions/upload-artifact@v4
@@ -174,7 +174,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .trading_state/
-          key: live-state-${{ github.sha }}
+          key: live-state-${{ github.ref_name }}
           restore-keys: |
             live-state-
 

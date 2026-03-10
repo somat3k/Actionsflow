@@ -120,6 +120,7 @@ class SystemConfig:
     version: str = "1.0.0"
     log_level: str = "INFO"
     state_dir: str = ".trading_state"
+    database_file: str = "workflow_state.db"
     results_dir: str = "results"
 
 
@@ -280,6 +281,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         version=system_raw.get("version", "1.0.0"),
         log_level=os.environ.get("LOG_LEVEL", system_raw.get("log_level", "INFO")),
         state_dir=system_raw.get("state_dir", ".trading_state"),
+        database_file=system_raw.get("database_file", "workflow_state.db"),
         results_dir=system_raw.get("results_dir", "results"),
     )
 

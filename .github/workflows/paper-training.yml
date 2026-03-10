@@ -60,7 +60,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: models/
-          key: ml-models-${{ github.sha }}
+          key: ml-models-${{ github.ref_name }}
           restore-keys: |
             ml-models-
 
@@ -95,7 +95,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: models/
-          key: ml-models-${{ github.sha }}
+          key: ml-models-${{ github.ref_name }}
 
       - name: Upload training artifacts
         uses: actions/upload-artifact@v4

@@ -69,7 +69,7 @@ jobs:
           path: |
             .trading_state/
             models/
-          key: trading-state-${{ inputs.mode || 'paper' }}-${{ github.sha }}
+          key: trading-state-${{ inputs.mode || 'paper' }}-${{ github.ref_name }}
           restore-keys: |
             trading-state-${{ inputs.mode || 'paper' }}-
 
