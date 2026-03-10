@@ -100,3 +100,47 @@ def test_model_not_found_without_supported_model_uses_heuristic_fallback(monkeyp
 
     assert result["validated_signal"] == 2
     assert result["reasoning"] == "Gemini unavailable – using raw ML signal"
+
+
+def test_model_not_found_with_only_same_model_uses_heuristic_fallback(monkeypatch):
+    from src import gemini_orchestrator as go
+
+    cfg = load_config()
+    cfg.gemini.api_key = "test-key"
+    cfg.gemini.model = "gemini-1.5-pro"
+
+    calls: list[str] = []
+
+    class FakeModel:
+        def __init__(self, model_name: str, system_instruction: str):
+            self.model_name = model_name
+
+        def generate_content(self, prompt, generation_config):
+            calls.append(self.model_name)
+            raise Exception(
+                "404 models/gemini-1.5-pro is not found for API version v1beta, "
+                "or is not supported for generateContent."
+            )
+
+    class FakeGenAI:
+        @staticmethod
+        def configure(api_key: str):
+            return None
+
+        @staticmethod
+        def list_models():
+            return [
+                _FakeModelInfo("models/gemini-1.5-pro", ["generateContent"]),
+            ]
+
+        GenerativeModel = FakeModel
+
+    monkeypatch.setattr(go, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr(go, "genai", FakeGenAI)
+
+    orchestrator = GeminiOrchestrator(cfg)
+    result = orchestrator.analyse_market_context("BTC", {"signal": 0}, {})
+
+    assert calls == ["gemini-1.5-pro"]
+    assert result["validated_signal"] == 0
+    assert result["reasoning"] == "Gemini unavailable – using raw ML signal"

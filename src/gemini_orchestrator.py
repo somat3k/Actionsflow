@@ -277,7 +277,8 @@ class GeminiOrchestrator:
         try:
             return _generate()
         except Exception as exc:
-            if self._is_model_not_found_error(exc) and self._switch_to_supported_model():
+            failed_model = self.gcfg.model
+            if self._is_model_not_found_error(exc) and self._switch_to_supported_model(failed_model):
                 try:
                     return _generate()
                 except Exception as retry_exc:
@@ -289,9 +290,9 @@ class GeminiOrchestrator:
     @staticmethod
     def _is_model_not_found_error(exc: Exception) -> bool:
         msg = str(exc).lower()
-        return "not found" in msg and "generatecontent" in msg
+        return "404" in msg and "model" in msg and "not found" in msg and "generatecontent" in msg
 
-    def _switch_to_supported_model(self) -> bool:
+    def _switch_to_supported_model(self, failed_model: str) -> bool:
         try:
             available = []
             for model in genai.list_models():
@@ -317,13 +318,14 @@ class GeminiOrchestrator:
             for preferred in preferred_order:
                 for candidate in available:
                     if candidate.startswith(preferred):
-                        if candidate != self.gcfg.model:
-                            self._model = genai.GenerativeModel(
-                                model_name=candidate,
-                                system_instruction=_SYSTEM_PROMPT,
-                            )
-                            self.gcfg.model = candidate
-                            log.warning("Switched Gemini model to supported fallback '%s'", candidate)
+                        if candidate == failed_model:
+                            continue
+                        self._model = genai.GenerativeModel(
+                            model_name=candidate,
+                            system_instruction=_SYSTEM_PROMPT,
+                        )
+                        self.gcfg.model = candidate
+                        log.warning("Switched Gemini model to supported fallback '%s'", candidate)
                         return True
 
             return False
