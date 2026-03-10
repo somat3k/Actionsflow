@@ -76,7 +76,7 @@ def _get_last_training_time(db: DatabaseManager, symbol: str) -> Optional[dateti
 
 
 def _should_retrain(cfg: AppConfig, db: DatabaseManager, symbol: str) -> bool:
-    """Return True when retraining is due; returns False when interval <= 0."""
+    """Return True when retraining is due or missing; False when interval <= 0."""
     interval_hours = cfg.ml.retrain_interval_hours
     if interval_hours <= 0:
         return False
