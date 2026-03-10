@@ -73,9 +73,9 @@ data:
 
   # Candle intervals to fetch
   intervals:
-    primary: "15m"                    # Primary trading timeframe
-    secondary: "1h"                   # Higher timeframe for trend
-    macro: "4h"                       # Macro context
+    primary: "1m"                     # Primary trading timeframe
+    secondary: "5m"                   # Higher timeframe for trend
+    macro: "15m"                      # Macro context
 
   # Lookback periods for feature engineering
   lookback:
