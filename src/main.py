@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -50,6 +51,46 @@ def _print_github_summary(text: str) -> None:
 def _get_hyperliquid_private_key() -> Optional[str]:
     """Read Hyperliquid private key from supported environment variable names."""
     return os.environ.get("HYPERLIQUID_SECRET") or os.environ.get("HYPERLIQUID_PRIVATE_KEY")
+
+
+def _parse_cached_timestamp(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _get_last_training_time(db: DatabaseManager, symbol: str) -> Optional[datetime]:
+    cache_value = db.get_cache("training:last_run")
+    if isinstance(cache_value, dict):
+        return _parse_cached_timestamp(cache_value.get(symbol))
+    return _parse_cached_timestamp(cache_value)
+
+
+def _should_retrain(cfg, db: DatabaseManager, symbol: str) -> bool:
+    interval_hours = cfg.ml.retrain_interval_hours
+    if interval_hours <= 0:
+        return False
+    last_training = _get_last_training_time(db, symbol)
+    if last_training is None:
+        return True
+    return utc_now() - last_training >= timedelta(hours=interval_hours)
+
+
+def _record_training_time(db: DatabaseManager, symbols: List[str]) -> None:
+    cache_value = db.get_cache("training:last_run")
+    last_runs: Dict[str, str] = cache_value if isinstance(cache_value, dict) else {}
+    timestamp = utc_now().isoformat()
+    for symbol in symbols:
+        last_runs[symbol] = timestamp
+    db.set_cache("training:last_run", last_runs)
 
 
 def run_training(config_path: Optional[Path] = None) -> int:
@@ -96,6 +137,8 @@ def run_training(config_path: Optional[Path] = None) -> int:
         summary += row
     _print_github_summary(summary)
     db.set_cache("training:last_scores", results)
+    if results:
+        _record_training_time(db, list(results.keys()))
     db.record_task_completion(
         task_name="model_training",
         run_type="train-models",
@@ -134,8 +177,28 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
             continue
         symbol = market.symbol
 
-        # Load model
-        if not ensemble.load(symbol):
+        loaded = ensemble.load(symbol)
+        needs_retrain = _should_retrain(cfg, db, symbol) or not loaded
+        if needs_retrain:
+            log.info("Retraining model for %s …", symbol)
+            retrain_df = fetcher.fetch_candles(
+                symbol,
+                cfg.data.primary_interval,
+                lookback_candles=cfg.data.lookback_candles,
+            )
+            if retrain_df.empty:
+                log.warning("No data for %s – skipping retraining", symbol)
+            else:
+                try:
+                    ensemble.train(retrain_df, symbol=symbol)
+                except Exception as exc:
+                    log.warning("Retraining failed for %s: %s", symbol, exc)
+                    if not loaded:
+                        continue
+                else:
+                    _record_training_time(db, [symbol])
+                    loaded = True
+        if not loaded:
             log.warning("No model for %s – skipping", symbol)
             continue
 
@@ -302,7 +365,28 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
             continue
         symbol = market.symbol
 
-        if not ensemble.load(symbol):
+        loaded = ensemble.load(symbol)
+        needs_retrain = _should_retrain(cfg, db, symbol) or not loaded
+        if needs_retrain:
+            log.info("Retraining model for %s …", symbol)
+            retrain_df = fetcher.fetch_candles(
+                symbol,
+                cfg.data.primary_interval,
+                lookback_candles=cfg.data.lookback_candles,
+            )
+            if retrain_df.empty:
+                log.warning("No data for %s – skipping retraining", symbol)
+            else:
+                try:
+                    ensemble.train(retrain_df, symbol=symbol)
+                except Exception as exc:
+                    log.warning("Retraining failed for %s: %s", symbol, exc)
+                    if not loaded:
+                        continue
+                else:
+                    _record_training_time(db, [symbol])
+                    loaded = True
+        if not loaded:
             log.warning("No model for %s – skipping", symbol)
             continue
 
