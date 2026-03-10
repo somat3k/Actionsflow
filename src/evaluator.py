@@ -47,6 +47,12 @@ class PerformanceMetrics:
     total_fees: float = 0.0
     final_equity: float = 0.0
     initial_equity: float = 0.0
+    # Extended metrics for quantum trading
+    accuracy: float = 0.0
+    equity_growth_pct: float = 0.0
+    num_positions: int = 0
+    gemini_answer_time_avg_s: float = 0.0
+    action_time_avg_s: float = 0.0
 
 
 def compute_metrics(
@@ -93,6 +99,8 @@ def compute_metrics(
 
     # ── Return & equity curve ─────────────────────────────────────────────────
     m.total_return_pct = safe_divide(final_equity - initial_equity, initial_equity)
+    m.equity_growth_pct = m.total_return_pct
+    m.accuracy = m.win_rate  # accuracy = win rate in trading context
 
     if "entry_time_ms" in trades_df.columns and "exit_time_ms" in trades_df.columns:
         total_ms = (

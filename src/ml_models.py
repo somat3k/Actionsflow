@@ -1,7 +1,9 @@
 """
 Quantum Trading System – ML Models
-Ensemble of LSTM, XGBoost, Gradient Boosting, and Random Forest models that
-produce a combined directional signal (long / short / flat) with confidence.
+Ensemble of LSTM, XGBoost, Gradient Boosting, Random Forest, and Linear
+classifier models that produce a combined directional signal (long / short / flat)
+with confidence.  Supports per-timeframe epoch training and combined decision
+tree-flow across multiplex timeframes.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings("ignore")
@@ -124,6 +127,16 @@ class QuantumEnsemble:
     """
     Ensemble of ML models producing a unified directional signal.
     Signals: 1 = long, 2 = short, 0 = flat.
+
+    Models:
+      - Linear (LogisticRegression) for fast regression/classification
+      - XGBoost for accuracy and confidence in tree-thinking regression
+      - Random Forest for decision-making tree-thinking regression
+      - Gradient Boosting for supporting ensemble diversity
+      - LSTM for sequential pattern recognition (optional)
+
+    Supports per-timeframe epoch training where each timeframe is trained
+    separately, and a combined decision tree-flow merges predictions.
     """
 
     N_CLASSES = 3  # 0=flat, 1=long, 2=short
@@ -141,12 +154,192 @@ class QuantumEnsemble:
         self.gb_model: Optional[GradientBoostingClassifier] = None
         self.rf_model: Optional[RandomForestClassifier] = None
         self.lstm_model: Optional[Any] = None
+        self.linear_model: Optional[LogisticRegression] = None
+
+        # Per-timeframe models for epoch training
+        self._tf_models: Dict[str, Dict[str, Any]] = {}
 
         self._model_weights = {
-            "xgb": 0.35,
-            "gb": 0.15,
-            "rf": 0.15,
-            "lstm": 0.35,
+            "xgb": 0.30,
+            "gb": 0.10,
+            "rf": 0.20,
+            "lstm": 0.25,
+            "linear": 0.15,
+        }
+        self._training_accuracy: Dict[str, float] = {}
+
+    # ── Per-timeframe epoch training ──────────────────────────────────────────
+
+    def train_timeframe(
+        self, df: pd.DataFrame, symbol: str, timeframe: str
+    ) -> Dict[str, float]:
+        """Train models for a specific timeframe (epoch-ish per-timeframe)."""
+        log.info(
+            "Epoch training for %s@%s on %d rows", symbol, timeframe, len(df)
+        )
+        X_raw, feature_cols = _prepare_features(df)
+        y = _build_label(df).values
+        X_raw = X_raw[: len(y)]
+        y = y[: len(X_raw)]
+
+        split = int(len(X_raw) * 0.80)
+        if split < 10:
+            log.warning("Insufficient data for %s@%s", symbol, timeframe)
+            return {}
+
+        X_train, X_val = X_raw[:split], X_raw[split:]
+        y_train, y_val = y[:split], y[split:]
+
+        scaler = StandardScaler()
+        scaler.fit(X_train)
+        X_train_s = scaler.transform(X_train)
+        X_val_s = scaler.transform(X_val)
+
+        scores: Dict[str, float] = {}
+
+        # XGBoost
+        if _XGB_AVAILABLE:
+            xgb_model = xgb.XGBClassifier(
+                n_estimators=500, max_depth=6, learning_rate=0.05,
+                subsample=0.8, colsample_bytree=0.8, min_child_weight=3,
+                eval_metric="mlogloss", verbosity=0, n_jobs=-1,
+            )
+            xgb_model.fit(
+                X_train_s, y_train, eval_set=[(X_val_s, y_val)], verbose=False
+            )
+            scores["xgb"] = float(np.mean(xgb_model.predict(X_val_s) == y_val))
+
+        # Random Forest
+        rf_model = RandomForestClassifier(
+            n_estimators=200, max_depth=10, n_jobs=-1, random_state=42
+        )
+        rf_model.fit(X_train_s, y_train)
+        scores["rf"] = float(np.mean(rf_model.predict(X_val_s) == y_val))
+
+        # Linear classifier
+        linear_model = LogisticRegression(
+            C=1.0, max_iter=1000, solver="lbfgs"
+        )
+        linear_model.fit(X_train_s, y_train)
+        scores["linear"] = float(np.mean(linear_model.predict(X_val_s) == y_val))
+
+        self._tf_models[timeframe] = {
+            "scaler": scaler,
+            "feature_cols": feature_cols,
+            "xgb": xgb_model if _XGB_AVAILABLE else None,
+            "rf": rf_model,
+            "linear": linear_model,
+            "scores": scores,
+        }
+        log.info("Epoch %s@%s scores: %s", symbol, timeframe, scores)
+        return scores
+
+    def predict_timeframe(self, df: pd.DataFrame, timeframe: str) -> Dict[str, Any]:
+        """Run inference for a single timeframe model."""
+        tf_data = self._tf_models.get(timeframe)
+        if tf_data is None:
+            return {"signal": 0, "confidence": 0.0, "timeframe": timeframe}
+
+        feature_cols = tf_data["feature_cols"]
+        available = [c for c in feature_cols if c in df.columns]
+        if not available:
+            return {"signal": 0, "confidence": 0.0, "timeframe": timeframe}
+
+        X_raw = df[available].iloc[-1:].values.astype(np.float32)
+        X_s = tf_data["scaler"].transform(X_raw)
+
+        probas: Dict[str, np.ndarray] = {}
+        if tf_data.get("xgb") is not None:
+            probas["xgb"] = tf_data["xgb"].predict_proba(X_s)
+        if tf_data.get("rf") is not None:
+            probas["rf"] = tf_data["rf"].predict_proba(X_s)
+        if tf_data.get("linear") is not None:
+            probas["linear"] = tf_data["linear"].predict_proba(X_s)
+
+        if not probas:
+            return {"signal": 0, "confidence": 0.0, "timeframe": timeframe}
+
+        weights = {"xgb": 0.40, "rf": 0.35, "linear": 0.25}
+        w_sum = sum(weights[k] for k in probas)
+        weighted_proba = sum(
+            weights[k] / w_sum * probas[k] for k in probas
+        )[0]
+
+        flat_prob = float(weighted_proba[0]) if len(weighted_proba) > 0 else 1.0
+        long_prob = float(weighted_proba[1]) if len(weighted_proba) > 1 else 0.0
+        short_prob = float(weighted_proba[2]) if len(weighted_proba) > 2 else 0.0
+
+        max_prob = max(long_prob, short_prob, flat_prob)
+        if max_prob == long_prob and long_prob >= 0.50:
+            signal, confidence = 1, long_prob
+        elif max_prob == short_prob and short_prob >= 0.50:
+            signal, confidence = 2, short_prob
+        else:
+            signal, confidence = 0, flat_prob
+
+        return {
+            "signal": signal,
+            "confidence": confidence,
+            "long_prob": long_prob,
+            "short_prob": short_prob,
+            "flat_prob": flat_prob,
+            "timeframe": timeframe,
+        }
+
+    def combined_decision(
+        self, tf_predictions: Dict[str, Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Combine predictions from multiple timeframes into a final signal.
+
+        Uses a decision tree-flow approach: higher timeframes carry more weight.
+        """
+        if not tf_predictions:
+            return {
+                "signal": 0,
+                "confidence": 0.0,
+                "agreement": 0.0,
+                "timeframe_signals": {},
+            }
+
+        tf_weights = {"1m": 0.10, "5m": 0.15, "15m": 0.25, "1H": 0.25, "1D": 0.25}
+        total_weight = 0.0
+        weighted_long = 0.0
+        weighted_short = 0.0
+        weighted_flat = 0.0
+        tf_signals = {}
+
+        for tf, pred in tf_predictions.items():
+            w = tf_weights.get(tf, 0.10)
+            total_weight += w
+            weighted_long += w * pred.get("long_prob", 0.0)
+            weighted_short += w * pred.get("short_prob", 0.0)
+            weighted_flat += w * pred.get("flat_prob", 1.0)
+            tf_signals[tf] = pred.get("signal", 0)
+
+        if total_weight > 0:
+            weighted_long /= total_weight
+            weighted_short /= total_weight
+            weighted_flat /= total_weight
+
+        max_p = max(weighted_long, weighted_short, weighted_flat)
+        if max_p == weighted_long and weighted_long >= 0.55:
+            signal, confidence = 1, weighted_long
+        elif max_p == weighted_short and weighted_short >= 0.55:
+            signal, confidence = 2, weighted_short
+        else:
+            signal, confidence = 0, weighted_flat
+
+        n_agree = sum(1 for s in tf_signals.values() if s == signal)
+        agreement = n_agree / len(tf_signals) if tf_signals else 0.0
+
+        return {
+            "signal": signal,
+            "confidence": confidence,
+            "long_prob": weighted_long,
+            "short_prob": weighted_short,
+            "flat_prob": weighted_flat,
+            "agreement": agreement,
+            "timeframe_signals": tf_signals,
         }
 
     # ── Training ───────────────────────────────────────────────────────────────
@@ -214,6 +407,17 @@ class QuantumEnsemble:
         scores["rf"] = float(np.mean(self.rf_model.predict(X_val_s) == y_val))
         log.info("RandomForest val acc: %.4f", scores["rf"])
 
+        # Linear Classifier (LogisticRegression for classification)
+        log.info("Training LinearClassifier …")
+        self.linear_model = LogisticRegression(
+            C=1.0, max_iter=1000, solver="lbfgs"
+        )
+        self.linear_model.fit(X_train_s, y_train)
+        scores["linear"] = float(
+            np.mean(self.linear_model.predict(X_val_s) == y_val)
+        )
+        log.info("LinearClassifier val acc: %.4f", scores["linear"])
+
         # LSTM
         if _TF_AVAILABLE:
             seq_len = 60
@@ -247,6 +451,7 @@ class QuantumEnsemble:
             except Exception as exc:
                 log.warning("LSTM training failed: %s", exc)
 
+        self._training_accuracy = scores
         self._save(symbol)
         log.info("Ensemble training complete. Scores: %s", scores)
         return scores
@@ -282,6 +487,8 @@ class QuantumEnsemble:
             probas["gb"] = self.gb_model.predict_proba(X_s)
         if self.rf_model is not None:
             probas["rf"] = self.rf_model.predict_proba(X_s)
+        if self.linear_model is not None:
+            probas["linear"] = self.linear_model.predict_proba(X_s)
         if self.lstm_model is not None and _TF_AVAILABLE:
             # Need sequence; use last 60 rows
             seq_len = 60
@@ -366,6 +573,8 @@ class QuantumEnsemble:
             joblib.dump(self.gb_model, prefix / "gb.pkl")
         if self.rf_model:
             joblib.dump(self.rf_model, prefix / "rf.pkl")
+        if self.linear_model:
+            joblib.dump(self.linear_model, prefix / "linear.pkl")
         if self.lstm_model and _TF_AVAILABLE:
             self.lstm_model.save(str(prefix / "lstm"))
         log.info("Models saved to %s", prefix)
@@ -391,6 +600,9 @@ class QuantumEnsemble:
         rf_path = prefix / "rf.pkl"
         if rf_path.exists():
             self.rf_model = joblib.load(rf_path)
+        linear_path = prefix / "linear.pkl"
+        if linear_path.exists():
+            self.linear_model = joblib.load(linear_path)
         lstm_path = prefix / "lstm"
         if lstm_path.exists() and _TF_AVAILABLE:
             self.lstm_model = keras.models.load_model(str(lstm_path))

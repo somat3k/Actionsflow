@@ -76,10 +76,16 @@ class HyperliquidDataFetcher:
         return df
 
     def fetch_multi_timeframe(self, symbol: str) -> Dict[str, pd.DataFrame]:
-        """Fetch candles for primary, secondary, and macro timeframes."""
+        """Fetch candles for all configured timeframes (1m, 5m, 15m, 1H, 1D)."""
         cfg = self.cfg.data
         frames: Dict[str, pd.DataFrame] = {}
-        for tf in [cfg.primary_interval, cfg.secondary_interval, cfg.macro_interval]:
+        for tf in [
+            cfg.primary_interval,
+            cfg.secondary_interval,
+            cfg.macro_interval,
+            cfg.hourly_interval,
+            cfg.daily_interval,
+        ]:
             frames[tf] = self.fetch_candles(symbol, tf)
         return frames
 
@@ -276,8 +282,12 @@ class HyperliquidDataFetcher:
             }
         if ptype == "metaAndAssetCtxs":
             # Return entries for all common symbols so fetch_funding_rate works for any.
-            symbols = ["BTC", "ETH", "SOL", "ARB"]
-            prices = [40_000.0, 3_000.0, 100.0, 1.0]
+            symbols = [
+                "BTC", "ETH", "SOL", "ARB", "ZRO", "AAVE", "FLOKI", "SHIB", "XAUT",
+            ]
+            prices = [
+                40_000.0, 3_000.0, 100.0, 1.0, 3.5, 280.0, 0.00015, 0.000025, 2_650.0,
+            ]
             universe = [{"name": s} for s in symbols]
             contexts = [
                 {

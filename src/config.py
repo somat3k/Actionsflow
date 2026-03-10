@@ -70,9 +70,11 @@ class TradingConfig:
 class DataConfig:
     hyperliquid_api_url: str = "https://api.hyperliquid.xyz/info"
     hyperliquid_ws_url: str = "wss://api.hyperliquid.xyz/ws"
-    primary_interval: str = "15m"
-    secondary_interval: str = "1h"
-    macro_interval: str = "4h"
+    primary_interval: str = "1m"
+    secondary_interval: str = "5m"
+    macro_interval: str = "15m"
+    hourly_interval: str = "1H"
+    daily_interval: str = "1D"
     lookback_candles: int = 500
 
 
@@ -89,7 +91,9 @@ class MLConfig:
 @dataclass
 class GeminiConfig:
     api_key: str = ""
-    model: str = "gemini-1.5-pro"
+    api_key_2: str = ""
+    model: str = "gemini-2.0-flash"
+    model_2: str = "gemini-2.5-pro"
     temperature: float = 0.1
     max_output_tokens: int = 2048
 
@@ -225,9 +229,11 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             data_raw.get("hyperliquid_api_url", "https://api.hyperliquid.xyz/info"),
         ),
         hyperliquid_ws_url=data_raw.get("hyperliquid_ws_url", "wss://api.hyperliquid.xyz/ws"),
-        primary_interval=os.environ.get("PRIMARY_INTERVAL", intervals.get("primary", "15m")),
-        secondary_interval=os.environ.get("SECONDARY_INTERVAL", intervals.get("secondary", "1h")),
-        macro_interval=os.environ.get("MACRO_INTERVAL", intervals.get("macro", "4h")),
+        primary_interval=os.environ.get("PRIMARY_INTERVAL", intervals.get("primary", "1m")),
+        secondary_interval=os.environ.get("SECONDARY_INTERVAL", intervals.get("secondary", "5m")),
+        macro_interval=os.environ.get("MACRO_INTERVAL", intervals.get("macro", "15m")),
+        hourly_interval=os.environ.get("HOURLY_INTERVAL", intervals.get("hourly", "1H")),
+        daily_interval=os.environ.get("DAILY_INTERVAL", intervals.get("daily", "1D")),
         lookback_candles=int(lookback.get("candles", 500)),
     )
 
@@ -246,7 +252,9 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     # ── Gemini ────────────────────────────────────────────────
     gemini = GeminiConfig(
         api_key=os.environ.get("GEMINI_API_KEY", ""),
-        model=gemini_raw.get("model", "gemini-1.5-pro"),
+        api_key_2=os.environ.get("GEMINI_API_KEY2", ""),
+        model=gemini_raw.get("model", "gemini-2.0-flash"),
+        model_2=gemini_raw.get("model_2", "gemini-2.5-pro"),
         temperature=float(gemini_raw.get("temperature", 0.1)),
         max_output_tokens=int(gemini_raw.get("max_output_tokens", 2048)),
     )
