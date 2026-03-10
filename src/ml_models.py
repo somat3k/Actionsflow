@@ -259,7 +259,7 @@ class QuantumEnsemble:
         if not probas:
             return {"signal": 0, "confidence": 0.0, "timeframe": timeframe}
 
-        weights = {"xgb": 0.40, "rf": 0.35, "linear": 0.25}
+        weights = {"xgb": self._model_weights["xgb"], "rf": self._model_weights["rf"], "linear": self._model_weights["linear"]}
         w_sum = sum(weights[k] for k in probas)
         weighted_proba = sum(
             weights[k] / w_sum * probas[k] for k in probas
@@ -270,9 +270,9 @@ class QuantumEnsemble:
         short_prob = float(weighted_proba[2]) if len(weighted_proba) > 2 else 0.0
 
         max_prob = max(long_prob, short_prob, flat_prob)
-        if max_prob == long_prob and long_prob >= 0.50:
+        if max_prob == long_prob and long_prob >= self.cfg.ml.long_threshold:
             signal, confidence = 1, long_prob
-        elif max_prob == short_prob and short_prob >= 0.50:
+        elif max_prob == short_prob and short_prob >= self.cfg.ml.short_threshold:
             signal, confidence = 2, short_prob
         else:
             signal, confidence = 0, flat_prob
@@ -322,9 +322,9 @@ class QuantumEnsemble:
             weighted_flat /= total_weight
 
         max_p = max(weighted_long, weighted_short, weighted_flat)
-        if max_p == weighted_long and weighted_long >= 0.55:
+        if max_p == weighted_long and weighted_long >= self.cfg.ml.long_threshold:
             signal, confidence = 1, weighted_long
-        elif max_p == weighted_short and weighted_short >= 0.55:
+        elif max_p == weighted_short and weighted_short >= self.cfg.ml.short_threshold:
             signal, confidence = 2, weighted_short
         else:
             signal, confidence = 0, weighted_flat

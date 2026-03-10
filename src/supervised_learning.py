@@ -3,7 +3,7 @@ Quantum Trading System – Live-Supervised Learning Module
 
 Evaluates recent trading performance and dynamically adjusts model parameters
 and trading strategy based on live feedback.  Acts as a bridge between the
-Evaluator and the ML ensemble, applying data-driven elevations to improve
+Evaluator and the ML ensemble, applying data-driven adjustments to improve
 signal quality over time.
 """
 
