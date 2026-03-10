@@ -164,6 +164,16 @@ python -m src.main --run-type signal --mode paper
 python -m src.main --run-type evaluate --mode paper
 ```
 
+### Streamlit Dashboard
+
+The Streamlit dashboard surfaces live metrics, model scores, and a Gemini chat assistant
+powered by the project's persisted data in `.trading_state/` and `results/`.
+
+```bash
+# Start the dashboard (ensure GEMINI_API_KEY is set for chat responses)
+streamlit run dashboard/app.py
+```
+
 ---
 
 ## Risk Disclaimer
