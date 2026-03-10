@@ -72,6 +72,7 @@ def _get_last_training_time(db: DatabaseManager, symbol: str) -> Optional[dateti
     cache_value = db.get_cache("training:last_run")
     if isinstance(cache_value, dict):
         return _parse_cached_timestamp(cache_value.get(symbol))
+    # Legacy cache stored a single timestamp for all symbols.
     return _parse_cached_timestamp(cache_value)
 
 
@@ -104,9 +105,9 @@ def _ensure_model_ready(
 ) -> bool:
     """Return True when a model is ready; False if load/training cannot provide one."""
     loaded = ensemble.load(symbol)
-    needs_scheduled_retrain = _should_retrain(cfg, db, symbol)
+    is_scheduled_retrain_due = _should_retrain(cfg, db, symbol)
     needs_initial_train = not loaded
-    should_train = needs_scheduled_retrain or needs_initial_train
+    should_train = is_scheduled_retrain_due or needs_initial_train
     if should_train:
         action = "Training" if needs_initial_train else "Retraining"
         log.info("%s model for %s ...", action, symbol)

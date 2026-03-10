@@ -50,6 +50,7 @@ def test_env(tmp_path, monkeypatch):
     (tmp_path / "models").mkdir()
     (tmp_path / "results").mkdir()
     (tmp_path / ".trading_state").mkdir()
+    DummyEnsemble.instances = []
     return tmp_path
 
 
@@ -69,7 +70,6 @@ def test_hyperliquid_legacy_key_is_used_as_fallback(monkeypatch):
 
 def test_signal_retrains_when_model_stale(test_env, monkeypatch):
     DummyEnsemble.default_loaded = True
-    DummyEnsemble.instances = []
     monkeypatch.setattr("src.ml_models.QuantumEnsemble", DummyEnsemble)
 
     cfg = load_config()
@@ -98,7 +98,6 @@ def test_signal_retrains_when_model_stale(test_env, monkeypatch):
 
 def test_signal_skips_retrain_when_recent(test_env, monkeypatch):
     DummyEnsemble.default_loaded = True
-    DummyEnsemble.instances = []
     monkeypatch.setattr("src.ml_models.QuantumEnsemble", DummyEnsemble)
 
     cfg = load_config()
