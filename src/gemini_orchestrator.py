@@ -263,7 +263,7 @@ class GeminiOrchestrator:
     # ── Gemini call ───────────────────────────────────────────────────────────
 
     def _call_gemini(self, prompt: str) -> Optional[str]:
-        try:
+        def _generate() -> Optional[str]:
             gen_cfg = {
                 "temperature": self.gcfg.temperature,
                 "max_output_tokens": self.gcfg.max_output_tokens,
@@ -273,9 +273,65 @@ class GeminiOrchestrator:
                 generation_config=gen_cfg,
             )
             return response.text
+
+        try:
+            return _generate()
         except Exception as exc:
+            failed_model = self.gcfg.model
+            if self._is_model_not_found_error(exc) and self._switch_to_supported_model(failed_model):
+                try:
+                    return _generate()
+                except Exception as retry_exc:
+                    log.error("Gemini API call failed after model switch: %s", retry_exc)
+                    return None
             log.error("Gemini API call failed: %s", exc)
             return None
+
+    @staticmethod
+    def _is_model_not_found_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "404" in msg and "model" in msg and "not found" in msg and "generatecontent" in msg
+
+    def _switch_to_supported_model(self, failed_model: str) -> bool:
+        try:
+            available = []
+            for model in genai.list_models():
+                name = getattr(model, "name", "")
+                methods = {
+                    method.lower()
+                    for method in getattr(model, "supported_generation_methods", [])
+                    if isinstance(method, str)
+                }
+                if name.startswith("models/gemini") and "generatecontent" in methods:
+                    available.append(name.replace("models/", ""))
+
+            if not available:
+                return False
+
+            preferred_order = (
+                "gemini-2.5-pro",
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-pro",
+                "gemini-1.5-flash",
+            )
+            for preferred in preferred_order:
+                for candidate in available:
+                    if candidate.startswith(preferred):
+                        if candidate == failed_model:
+                            continue
+                        self._model = genai.GenerativeModel(
+                            model_name=candidate,
+                            system_instruction=_SYSTEM_PROMPT,
+                        )
+                        self.gcfg.model = candidate
+                        log.warning("Switched Gemini model to supported fallback '%s'", candidate)
+                        return True
+
+            return False
+        except Exception as exc:
+            log.warning("Failed to resolve fallback Gemini model: %s", exc)
+            return False
 
     @staticmethod
     def _extract_json(text: str) -> str:
