@@ -9,7 +9,7 @@ from src.database_manager import DatabaseManager
 from src.main import _get_hyperliquid_private_key, run_paper_signal
 from src.utils import utc_now
 
-TEST_STALENESS_BUFFER_HOURS = 1
+RETRAIN_TEST_BUFFER_HOURS = 1
 
 
 class DummyEnsemble:
@@ -76,7 +76,7 @@ def test_signal_retrains_when_model_stale(test_env, monkeypatch):
     db_path = test_env / cfg.system.state_dir / cfg.system.database_file
     db = DatabaseManager(db_path)
     stale_time = (
-        utc_now() - timedelta(hours=cfg.ml.retrain_interval_hours + TEST_STALENESS_BUFFER_HOURS)
+        utc_now() - timedelta(hours=cfg.ml.retrain_interval_hours + RETRAIN_TEST_BUFFER_HOURS)
     ).isoformat()
     db.set_cache(
         "training:last_run",

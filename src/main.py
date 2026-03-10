@@ -108,7 +108,7 @@ def _ensure_model_ready(
     needs_initial_train = not loaded
     should_train = needs_scheduled_retrain or needs_initial_train
     if should_train:
-        log.info("Retraining model for %s …", symbol)
+        log.info("Retraining model for %s ...", symbol)
         retrain_df = fetcher.fetch_candles(
             symbol,
             cfg.data.primary_interval,
