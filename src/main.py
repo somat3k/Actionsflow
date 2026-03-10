@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 import sys
 from dataclasses import asdict
@@ -28,7 +27,6 @@ from src.database_manager import DatabaseManager
 from src.evaluator import Evaluator, compute_metrics
 from src.gemini_orchestrator import GeminiOrchestrator
 from src.live_trader import LiveTrader
-from src.ml_models import QuantumEnsemble
 from src.paper_broker import PaperBroker
 from src.risk_manager import PositionRequest, RiskManager
 from src.utils import fmt_pct, fmt_usd, get_logger, utc_now
@@ -51,6 +49,8 @@ def _print_github_summary(text: str) -> None:
 
 def run_training(config_path: Optional[Path] = None) -> int:
     """Train ML models on historical Hyperliquid data."""
+    from src.ml_models import QuantumEnsemble
+
     cfg = load_config(config_path)
     db = _build_db_manager(cfg)
     log.setLevel(cfg.system.log_level)
@@ -104,6 +104,8 @@ def run_training(config_path: Optional[Path] = None) -> int:
 
 def run_paper_signal(config_path: Optional[Path] = None) -> int:
     """Run one signal evaluation cycle in paper-trading mode."""
+    from src.ml_models import QuantumEnsemble
+
     cfg = load_config(config_path)
     db = _build_db_manager(cfg)
     log.setLevel(cfg.system.log_level)
@@ -265,6 +267,8 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
 
 def run_live_signal(config_path: Optional[Path] = None) -> int:
     """Run one signal evaluation cycle in live-trading mode."""
+    from src.ml_models import QuantumEnsemble
+
     cfg = load_config(config_path)
     db = _build_db_manager(cfg)
     log.setLevel(cfg.system.log_level)
@@ -412,7 +416,7 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
         final_equity=broker.equity,
     )
 
-    report = evaluator.print_report(metrics, adjustments)
+    evaluator.print_report(metrics, adjustments)
 
     results_dir = Path(cfg.system.results_dir)
     evaluator.save_report(

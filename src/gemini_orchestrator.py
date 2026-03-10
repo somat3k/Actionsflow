@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import textwrap
+import warnings
 from typing import Any, Dict, List, Optional
 
 from src.config import AppConfig
@@ -16,7 +17,10 @@ from src.utils import fmt_pct, fmt_usd, get_logger
 log = get_logger(__name__)
 
 try:
-    import google.generativeai as genai
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        import google.generativeai as genai
+
     _GENAI_AVAILABLE = True
 except ImportError:
     _GENAI_AVAILABLE = False
