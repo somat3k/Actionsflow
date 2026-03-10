@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 import sys
 from dataclasses import asdict
@@ -24,15 +23,20 @@ from typing import Any, Dict, List, Optional
 
 from src.config import load_config
 from src.data_fetcher import HyperliquidDataFetcher
+from src.database_manager import DatabaseManager
 from src.evaluator import Evaluator, compute_metrics
 from src.gemini_orchestrator import GeminiOrchestrator
-from src.ml_models import QuantumEnsemble
-from src.paper_broker import PaperBroker
 from src.live_trader import LiveTrader
+from src.paper_broker import PaperBroker
 from src.risk_manager import PositionRequest, RiskManager
-from src.utils import get_logger, fmt_pct, fmt_usd, utc_now
+from src.utils import fmt_pct, fmt_usd, get_logger, utc_now
 
 log = get_logger(__name__)
+
+
+def _build_db_manager(cfg) -> DatabaseManager:
+    db_path = Path(cfg.system.state_dir) / cfg.system.database_file
+    return DatabaseManager(db_path)
 
 
 def _print_github_summary(text: str) -> None:
@@ -45,7 +49,10 @@ def _print_github_summary(text: str) -> None:
 
 def run_training(config_path: Optional[Path] = None) -> int:
     """Train ML models on historical Hyperliquid data."""
+    from src.ml_models import QuantumEnsemble
+
     cfg = load_config(config_path)
+    db = _build_db_manager(cfg)
     log.setLevel(cfg.system.log_level)
     log.info("=== TRAINING MODE ===")
 
@@ -83,13 +90,24 @@ def run_training(config_path: Optional[Path] = None) -> int:
         row = f"| {sym} | {_fmt('xgb')} | {_fmt('gb')} | {_fmt('rf')} | {_fmt('lstm')} |\n"
         summary += row
     _print_github_summary(summary)
+    db.set_cache("training:last_scores", results)
+    db.record_task_completion(
+        task_name="model_training",
+        run_type="train-models",
+        mode=cfg.trading.mode,
+        status="success",
+        metadata={"symbols_trained": list(results.keys())},
+    )
     log.info("Training complete. Results: %s", results)
     return 0
 
 
 def run_paper_signal(config_path: Optional[Path] = None) -> int:
     """Run one signal evaluation cycle in paper-trading mode."""
+    from src.ml_models import QuantumEnsemble
+
     cfg = load_config(config_path)
+    db = _build_db_manager(cfg)
     log.setLevel(cfg.system.log_level)
     log.info("=== PAPER SIGNAL CYCLE ===")
 
@@ -227,13 +245,32 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         f"- **Actions This Cycle:** {len(actions_taken)}\n"
     )
     _print_github_summary(summary)
+    db.set_cache(
+        "signal:paper:last_cycle",
+        {
+            "equity": equity,
+            "total_return": total_ret,
+            "actions": len(actions_taken),
+            "trades": len(broker.trade_history),
+        },
+    )
+    db.record_task_completion(
+        task_name="paper_signal_cycle",
+        run_type="signal",
+        mode="paper",
+        status="success",
+        metadata={"actions_taken": len(actions_taken), "equity": equity},
+    )
     log.info("Paper cycle complete. Equity: %s (return: %s)", fmt_usd(equity), fmt_pct(total_ret))
     return 0
 
 
 def run_live_signal(config_path: Optional[Path] = None) -> int:
     """Run one signal evaluation cycle in live-trading mode."""
+    from src.ml_models import QuantumEnsemble
+
     cfg = load_config(config_path)
+    db = _build_db_manager(cfg)
     log.setLevel(cfg.system.log_level)
     log.info("=== LIVE SIGNAL CYCLE ===")
 
@@ -346,12 +383,24 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
         f"- **Total Log Trades:** {len(trade_log)}\n"
     )
     _print_github_summary(summary)
+    db.set_cache(
+        "signal:live:last_cycle",
+        {"open_positions": n_open, "trade_log_size": len(trade_log)},
+    )
+    db.record_task_completion(
+        task_name="live_signal_cycle",
+        run_type="signal",
+        mode="live",
+        status="success",
+        metadata={"open_positions": n_open, "trade_log_size": len(trade_log)},
+    )
     return 0
 
 
 def run_evaluation(config_path: Optional[Path] = None) -> int:
     """Evaluate paper trading performance and emit adjustments."""
     cfg = load_config(config_path)
+    db = _build_db_manager(cfg)
     log.setLevel(cfg.system.log_level)
     log.info("=== EVALUATION MODE ===")
 
@@ -367,7 +416,7 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
         final_equity=broker.equity,
     )
 
-    report = evaluator.print_report(metrics, adjustments)
+    evaluator.print_report(metrics, adjustments)
 
     results_dir = Path(cfg.system.results_dir)
     evaluator.save_report(
@@ -403,6 +452,17 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
         for adj in adjustments:
             summary += f"- `{adj['parameter']}`: {adj['old_value']} → **{adj['new_value']}** _{adj['reason']}_\n"
     _print_github_summary(summary)
+    db.set_cache(
+        "evaluation:last_metrics",
+        {"pass": passes, "total_trades": metrics.total_trades, "sharpe_ratio": metrics.sharpe_ratio},
+    )
+    db.record_task_completion(
+        task_name="model_evaluation",
+        run_type="evaluate",
+        mode=cfg.trading.mode,
+        status="success",
+        metadata={"pass": passes, "total_trades": metrics.total_trades},
+    )
     return 0
 
 

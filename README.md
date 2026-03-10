@@ -137,6 +137,8 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 │   └── test_risk_manager.py
 ├── config/
 │   └── trading_config.yaml         # Full trading configuration
+├── .trading_state/
+│   └── workflow_state.db           # SQLite state DB for task completion + cache
 ├── requirements.txt
 └── pyproject.toml
 ```

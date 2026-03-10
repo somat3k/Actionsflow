@@ -115,7 +115,7 @@ jobs:
           path: |
             .trading_state/
             models/
-          key: trading-state-${{ needs.setup.outputs.trading_mode }}-${{ github.sha }}
+          key: trading-state-${{ needs.setup.outputs.trading_mode }}-${{ github.ref_name }}
           restore-keys: |
             trading-state-${{ needs.setup.outputs.trading_mode }}-
 
@@ -144,7 +144,7 @@ jobs:
           path: |
             .trading_state/
             models/
-          key: trading-state-${{ needs.setup.outputs.trading_mode }}-${{ github.sha }}
+          key: trading-state-${{ needs.setup.outputs.trading_mode }}-${{ github.ref_name }}
 
       # Upload results as artifacts for auditing
       - name: Upload results
