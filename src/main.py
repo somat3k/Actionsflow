@@ -102,7 +102,7 @@ def _ensure_model_ready(
     ensemble: Any,
     symbol: str,
 ) -> bool:
-    """Load or retrain a model, returning True when it is ready for inference."""
+    """Return True when a model is ready; False if load/training cannot provide one."""
     loaded = ensemble.load(symbol)
     needs_scheduled_retrain = _should_retrain(cfg, db, symbol)
     needs_initial_train = not loaded
@@ -121,7 +121,13 @@ def _ensure_model_ready(
             try:
                 ensemble.train(retrain_df, symbol=symbol)
             except Exception as exc:
-                log.warning("Retraining failed for %s: %s", symbol, exc)
+                log.warning(
+                    "%s failed for %s (%s): %s",
+                    action,
+                    symbol,
+                    type(exc).__name__,
+                    exc,
+                )
                 return loaded
             _record_training_time(db, [symbol])
             loaded = True
