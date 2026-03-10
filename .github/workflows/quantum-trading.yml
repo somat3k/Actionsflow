@@ -8,9 +8,9 @@
 name: Quantum Trading Orchestrator
 
 on:
-  # Every 15 minutes – primary signal cycle
+  # Every minute – high-frequency paper signal cycle
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/1 * * * *"
 
   # Allow manual trigger with parameter overrides
   workflow_dispatch:
@@ -32,6 +32,14 @@ on:
           - signal
           - evaluate
           - train-models
+      interval_sequence:
+        description: "Comma-separated intervals for signal testing sequence"
+        required: false
+        default: "1m,5m,15m"
+      min_trades_per_day:
+        description: "Minimum target paper trades per day"
+        required: false
+        default: "2000"
       symbols:
         description: "Comma-separated symbols to trade (e.g. BTC,ETH)"
         required: false
@@ -46,6 +54,12 @@ on:
       run_type:
         type: string
         default: "signal"
+      interval_sequence:
+        type: string
+        default: "1m,5m,15m"
+      min_trades_per_day:
+        type: string
+        default: "2000"
 
   # Allow repository_dispatch from external systems (e.g. webhooks)
   repository_dispatch:
@@ -67,6 +81,8 @@ jobs:
     outputs:
       trading_mode: ${{ steps.params.outputs.trading_mode }}
       run_type: ${{ steps.params.outputs.run_type }}
+      interval_sequence: ${{ steps.params.outputs.interval_sequence }}
+      min_trades_per_day: ${{ steps.params.outputs.min_trades_per_day }}
       should_trade: ${{ steps.params.outputs.should_trade }}
     steps:
       - name: Resolve parameters
@@ -74,14 +90,20 @@ jobs:
         run: |
           MODE="${{ inputs.trading_mode || github.event.client_payload.mode || 'paper' }}"
           RUN_TYPE="${{ inputs.run_type || github.event.client_payload.run_type || 'signal' }}"
+          INTERVAL_SEQUENCE="${{ inputs.interval_sequence || github.event.client_payload.interval_sequence || '1m,5m,15m' }}"
+          MIN_TRADES_PER_DAY="${{ inputs.min_trades_per_day || github.event.client_payload.min_trades_per_day || '2000' }}"
           echo "trading_mode=${MODE}" >> "$GITHUB_OUTPUT"
           echo "run_type=${RUN_TYPE}" >> "$GITHUB_OUTPUT"
+          echo "interval_sequence=${INTERVAL_SEQUENCE}" >> "$GITHUB_OUTPUT"
+          echo "min_trades_per_day=${MIN_TRADES_PER_DAY}" >> "$GITHUB_OUTPUT"
           echo "should_trade=true" >> "$GITHUB_OUTPUT"
           echo "### ⚙️ Run Parameters" >> "$GITHUB_STEP_SUMMARY"
           echo "| Parameter | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Trading Mode | \`${MODE}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Run Type | \`${RUN_TYPE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Interval Sequence | \`${INTERVAL_SEQUENCE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Min Trades/Day | \`${MIN_TRADES_PER_DAY}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Trigger | \`${{ github.event_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
   # ── Execute trading logic ──────────────────────────────────────────────────
@@ -127,14 +149,64 @@ jobs:
         env:
           TRADING_MODE: ${{ needs.setup.outputs.trading_mode }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          HYPERLIQUID_PRIVATE_KEY: ${{ secrets.HYPERLIQUID_PRIVATE_KEY }}
-          HYPERLIQUID_WALLET_ADDRESS: ${{ secrets.HYPERLIQUID_WALLET_ADDRESS }}
+          HYPERLIQUID_SECRET: ${{ secrets.HYPERLIQUID_SECRET || secrets.HYPERLIQUID_PRIVATE_KEY }}
+          HYPERLIQUID_PRIVATE_KEY: ${{ secrets.HYPERLIQUID_PRIVATE_KEY || secrets.HYPERLIQUID_SECRET }}
+          HYPERLIQUID_ADDRESS: ${{ secrets.HYPERLIQUID_ADDRESS || secrets.HYPERLIQUID_WALLET_ADDRESS }}
+          HYPERLIQUID_WALLET_ADDRESS: ${{ secrets.HYPERLIQUID_WALLET_ADDRESS || secrets.HYPERLIQUID_ADDRESS }}
           LIVE_TRADING_ENABLED: ${{ needs.setup.outputs.trading_mode == 'live' && secrets.LIVE_TRADING_ENABLED || 'false' }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
         run: |
-          python -m src.main \
-            --run-type "${{ needs.setup.outputs.run_type }}" \
-            --mode "${{ needs.setup.outputs.trading_mode }}"
+          if [[ "${{ needs.setup.outputs.run_type }}" != "signal" ]]; then
+            python -m src.main \
+              --run-type "${{ needs.setup.outputs.run_type }}" \
+              --mode "${{ needs.setup.outputs.trading_mode }}"
+            exit 0
+          fi
+
+          INTERVAL_SEQUENCE="${{ needs.setup.outputs.interval_sequence }}"
+          MIN_TRADES_PER_DAY="${{ needs.setup.outputs.min_trades_per_day }}"
+          IFS=',' read -ra INTERVALS <<< "${INTERVAL_SEQUENCE}"
+
+          VALID_INTERVALS=()
+          for interval in "${INTERVALS[@]}"; do
+            TRIMMED="$(echo "$interval" | xargs)"
+            [[ -z "${TRIMMED}" ]] && continue
+            if [[ ! "${TRIMMED}" =~ ^[1-9][0-9]*[mh]$ ]]; then
+              echo "Invalid interval format '${TRIMMED}'. Expected values like 1m, 5m, 1h."
+              exit 1
+            fi
+            VALID_INTERVALS+=("${TRIMMED}")
+          done
+
+          if [[ "${#VALID_INTERVALS[@]}" -eq 0 ]]; then
+            VALID_INTERVALS=("1m")
+          fi
+
+          FIRST_INTERVAL="${VALID_INTERVALS[0]}"
+          SECONDARY_DEFAULT="${VALID_INTERVALS[1]:-${FIRST_INTERVAL}}"
+          MACRO_DEFAULT="${VALID_INTERVALS[2]:-${SECONDARY_DEFAULT}}"
+
+          for interval in "${VALID_INTERVALS[@]}"; do
+            export PRIMARY_INTERVAL="${interval}"
+            export SECONDARY_INTERVAL="${SECONDARY_DEFAULT}"
+            export MACRO_INTERVAL="${MACRO_DEFAULT}"
+            echo "Running signal cycle for interval ${interval}"
+            python -m src.main --run-type signal --mode "${{ needs.setup.outputs.trading_mode }}"
+          done
+
+          MARKETS_COUNT=$(python -c "from src.config import load_config; cfg = load_config(); print(sum(1 for m in cfg.trading.markets if m.enabled))")
+          if [[ ! "${MARKETS_COUNT}" =~ ^[0-9]+$ || "${MARKETS_COUNT}" -le 0 ]]; then
+            echo "Failed to resolve a valid enabled market count: '${MARKETS_COUNT}'"
+            exit 1
+          fi
+
+          EXPECTED_TRADES_PER_DAY=$(python -c "markets = int('${MARKETS_COUNT}'); intervals = [i.strip() for i in '${INTERVAL_SEQUENCE}'.split(',') if i.strip()]; to_minutes = lambda iv: int(iv[:-1]) * 60 if iv.endswith('h') else int(iv[:-1]); projected = sum(markets * (1440.0 / to_minutes(iv)) for iv in intervals); print(projected if projected > 0 else markets * 1440.0)")
+          echo "- **Projected trades/day:** ${EXPECTED_TRADES_PER_DAY}" >> "$GITHUB_STEP_SUMMARY"
+          if ! python -c "import sys; projected = float('${EXPECTED_TRADES_PER_DAY}'); required = float('${MIN_TRADES_PER_DAY}'); sys.exit(0 if projected >= required else 1)"
+          then
+            echo "Projected trades/day ${EXPECTED_TRADES_PER_DAY} is below required minimum ${MIN_TRADES_PER_DAY}"
+            exit 1
+          fi
 
       # Persist updated state
       - name: Save trading state

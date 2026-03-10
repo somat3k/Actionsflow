@@ -47,6 +47,11 @@ def _print_github_summary(text: str) -> None:
             fh.write(text + "\n")
 
 
+def _get_hyperliquid_private_key() -> Optional[str]:
+    """Read Hyperliquid private key from supported environment variable names."""
+    return os.environ.get("HYPERLIQUID_SECRET") or os.environ.get("HYPERLIQUID_PRIVATE_KEY")
+
+
 def run_training(config_path: Optional[Path] = None) -> int:
     """Train ML models on historical Hyperliquid data."""
     from src.ml_models import QuantumEnsemble
@@ -274,9 +279,9 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
     log.setLevel(cfg.system.log_level)
     log.info("=== LIVE SIGNAL CYCLE ===")
 
-    private_key = os.environ.get("HYPERLIQUID_PRIVATE_KEY")
+    private_key = _get_hyperliquid_private_key()
     if not private_key:
-        log.error("HYPERLIQUID_PRIVATE_KEY not set – aborting live trading")
+        log.error("HYPERLIQUID_SECRET/HYPERLIQUID_PRIVATE_KEY not set – aborting live trading")
         return 1
 
     fetcher = HyperliquidDataFetcher(cfg)

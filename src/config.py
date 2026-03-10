@@ -225,9 +225,9 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             data_raw.get("hyperliquid_api_url", "https://api.hyperliquid.xyz/info"),
         ),
         hyperliquid_ws_url=data_raw.get("hyperliquid_ws_url", "wss://api.hyperliquid.xyz/ws"),
-        primary_interval=intervals.get("primary", "15m"),
-        secondary_interval=intervals.get("secondary", "1h"),
-        macro_interval=intervals.get("macro", "4h"),
+        primary_interval=os.environ.get("PRIMARY_INTERVAL", intervals.get("primary", "15m")),
+        secondary_interval=os.environ.get("SECONDARY_INTERVAL", intervals.get("secondary", "1h")),
+        macro_interval=os.environ.get("MACRO_INTERVAL", intervals.get("macro", "4h")),
         lookback_candles=int(lookback.get("candles", 500)),
     )
 
