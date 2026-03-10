@@ -9,16 +9,18 @@ from src.database_manager import DatabaseManager
 from src.main import _get_hyperliquid_private_key, run_paper_signal
 from src.utils import utc_now
 
-STALENESS_BUFFER_HOURS = 1
+TEST_STALENESS_BUFFER_HOURS = 1
 
 
 class DummyEnsemble:
     default_loaded = True
-    train_calls = []
+    instances = []
 
     def __init__(self, config):
         self.cfg = config
         self.loaded = self.default_loaded
+        self.train_calls = []
+        self.__class__.instances.append(self)
 
     def load(self, symbol):
         return self.loaded
@@ -67,14 +69,14 @@ def test_hyperliquid_legacy_key_is_used_as_fallback(monkeypatch):
 
 def test_signal_retrains_when_model_stale(test_env, monkeypatch):
     DummyEnsemble.default_loaded = True
-    DummyEnsemble.train_calls = []
+    DummyEnsemble.instances = []
     monkeypatch.setattr("src.ml_models.QuantumEnsemble", DummyEnsemble)
 
     cfg = load_config()
     db_path = test_env / cfg.system.state_dir / cfg.system.database_file
     db = DatabaseManager(db_path)
     stale_time = (
-        utc_now() - timedelta(hours=cfg.ml.retrain_interval_hours + STALENESS_BUFFER_HOURS)
+        utc_now() - timedelta(hours=cfg.ml.retrain_interval_hours + TEST_STALENESS_BUFFER_HOURS)
     ).isoformat()
     db.set_cache(
         "training:last_run",
@@ -82,7 +84,9 @@ def test_signal_retrains_when_model_stale(test_env, monkeypatch):
     )
 
     assert run_paper_signal() == 0
-    assert DummyEnsemble.train_calls, "Expected retraining when cached timestamp is stale"
+    assert any(
+        inst.train_calls for inst in DummyEnsemble.instances
+    ), "Expected retraining when cached timestamp is stale"
 
     updated = db.get_cache("training:last_run")
     assert isinstance(updated, dict)
@@ -94,7 +98,7 @@ def test_signal_retrains_when_model_stale(test_env, monkeypatch):
 
 def test_signal_skips_retrain_when_recent(test_env, monkeypatch):
     DummyEnsemble.default_loaded = True
-    DummyEnsemble.train_calls = []
+    DummyEnsemble.instances = []
     monkeypatch.setattr("src.ml_models.QuantumEnsemble", DummyEnsemble)
 
     cfg = load_config()
@@ -107,4 +111,6 @@ def test_signal_skips_retrain_when_recent(test_env, monkeypatch):
     )
 
     assert run_paper_signal() == 0
-    assert not DummyEnsemble.train_calls, "Expected no retraining when cache is recent"
+    assert not any(
+        inst.train_calls for inst in DummyEnsemble.instances
+    ), "Expected no retraining when cache is recent"

@@ -76,7 +76,7 @@ def _get_last_training_time(db: DatabaseManager, symbol: str) -> Optional[dateti
 
 
 def _should_retrain(cfg: AppConfig, db: DatabaseManager, symbol: str) -> bool:
-    """Return True when retraining is due; non-positive intervals disable it."""
+    """Return True when retraining is due; non-positive (<=0) intervals disable it."""
     interval_hours = cfg.ml.retrain_interval_hours
     if interval_hours <= 0:
         return False
@@ -104,8 +104,8 @@ def _ensure_model_ready(
 ) -> bool:
     """Load or retrain a model, returning True when it is ready for inference."""
     loaded = ensemble.load(symbol)
-    needs_retrain = _should_retrain(cfg, db, symbol) or not loaded
-    if needs_retrain:
+    should_train = _should_retrain(cfg, db, symbol) or not loaded
+    if should_train:
         log.info("Retraining model for %s …", symbol)
         retrain_df = fetcher.fetch_candles(
             symbol,
