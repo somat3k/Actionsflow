@@ -250,11 +250,13 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     lookback = data_raw.get("lookback", {})
     dataset_raw = data_raw.get("dataset", {})
     training_lookback_env = os.environ.get("LOOKBACK_CANDLES")
-    training_lookback = (
-        int(training_lookback_env)
-        if training_lookback_env
-        else int(lookback.get("training_candles", lookback.get("candles", 500)))
-    )
+    if training_lookback_env:
+        try:
+            training_lookback = int(training_lookback_env)
+        except ValueError as exc:
+            raise ValueError("LOOKBACK_CANDLES must be an integer value") from exc
+    else:
+        training_lookback = int(lookback.get("training_candles", lookback.get("candles", 500)))
     data = DataConfig(
         hyperliquid_api_url=os.environ.get(
             "HYPERLIQUID_API_URL",

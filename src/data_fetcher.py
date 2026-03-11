@@ -75,7 +75,7 @@ class HyperliquidDataFetcher:
         )
         return df
 
-    def download_ohlcv_history(
+    def fetch_ohlcv_history(
         self,
         symbol: str,
         interval: str,
@@ -84,7 +84,7 @@ class HyperliquidDataFetcher:
         end_ms: Optional[int] = None,
         include_features: bool = True,
     ) -> pd.DataFrame:
-        """Download extended-range OHLCV history for dataset creation."""
+        """Fetch extended-range OHLCV history for dataset creation."""
         n = lookback_candles or self.cfg.data.lookback_candles
         end_ms = end_ms or utc_now_ms()
         start_ms = start_ms or (end_ms - n * interval_to_ms(interval))

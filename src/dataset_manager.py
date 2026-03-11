@@ -58,7 +58,7 @@ class DatasetManager:
                         log.info("Loaded cached dataset for %s (%s)", symbol, path)
                         return df
 
-        df = fetcher.download_ohlcv_history(symbol, interval, lookback_candles=lookback)
+        df = fetcher.fetch_ohlcv_history(symbol, interval, lookback_candles=lookback)
         if df.empty:
             log.warning(
                 "No OHLCV data returned for %s - check API availability or symbol listing",
@@ -115,6 +115,7 @@ class DatasetManager:
         for col in working.columns:
             series = pd.to_numeric(working[col], errors="coerce")
             if series.isnull().any():
+                # Forward/back fill keeps continuity before zero fill handles leading gaps.
                 log.warning("NaN values detected in dataset column '%s' - applying fill", col)
                 series = series.ffill().bfill().fillna(0)
             arr = series.to_numpy()

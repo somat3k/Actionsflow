@@ -88,6 +88,8 @@ class OpenAICompatibleOrchestrator:
         return _parse_json_response(response)
 
     def _call_model(self, prompt: str) -> Optional[str]:
+        if not self.api_key:
+            return None
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -102,7 +104,11 @@ class OpenAICompatibleOrchestrator:
             "max_tokens": self.max_output_tokens,
         }
         try:
-            response = requests.post(self.api_url, json=payload, timeout=self.timeout_seconds)
+            response = requests.post(
+                self.api_url,
+                json=payload,
+                timeout=(5, self.timeout_seconds),
+            )
             response.raise_for_status()
             data = response.json()
             choices = data.get("choices", [])
@@ -377,6 +383,7 @@ def _merge_leverage(responses: List[Dict[str, Any]], current_leverage: int) -> D
         for resp in responses
         if resp.get("recommended_leverage") is not None
     ]
+    # Median reduces the impact of outlier leverage recommendations.
     avg_lev = (
         round(statistics.median(map(float, leverages)))
         if leverages

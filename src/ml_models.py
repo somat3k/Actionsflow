@@ -266,6 +266,7 @@ class QuantumEnsemble:
         epoch_results: List[Dict[str, Any]] = []
         for epoch in range(1, epochs + 1):
             progress = epoch / epochs
+            # Ensure minimum 35% of data for stable training signals in early epochs.
             fraction = max(0.35, progress ** 0.5)
             window = max(1, int(total_rows * fraction))
             epoch_df = df.tail(window)
@@ -294,6 +295,7 @@ class QuantumEnsemble:
         self, scores: Dict[str, float], alpha: float
     ) -> Dict[str, float]:
         """Update model weights using reward scores (reinforcement-style)."""
+        alpha = max(0.0, min(alpha, 1.0))
         valid_scores = {
             key: float(score)
             for key, score in scores.items()
@@ -302,7 +304,6 @@ class QuantumEnsemble:
         total_score = sum(valid_scores.values())
         if total_score <= 0 or not valid_scores:
             return dict(self._model_weights)
-        alpha = max(0.0, min(alpha, 1.0))
         for model, score in valid_scores.items():
             if model not in self._model_weights:
                 continue
