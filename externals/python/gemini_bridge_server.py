@@ -16,7 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
 from src.config import load_config
-from src.evaluator import compute_metrics
+from src.evaluator import PerformanceMetrics, compute_metrics
 from src.ml_models import QuantumEnsemble
 from src.risk_manager import PositionRequest, RiskManager
 from src.utils import add_all_features
@@ -99,8 +99,10 @@ class BridgeState:
         confidence = max(0.0, min(1.0, confidence))
         final_signal = int(gemini_result.get("validated_signal", ml_signal.get("signal", 0)))
 
-        account = payload.get("account") if isinstance(payload.get("account"), dict) else {}
-        positions = payload.get("positions") if isinstance(payload.get("positions"), dict) else {}
+        account_payload = payload.get("account")
+        positions_payload = payload.get("positions")
+        account = account_payload if isinstance(account_payload, dict) else {}
+        positions = positions_payload if isinstance(positions_payload, dict) else {}
         equity = self._coerce_float(account.get("equity"), self.cfg.trading.initial_equity)
         balance = self._coerce_float(account.get("balance"), equity)
         current_leverage = int(account.get("leverage", self.cfg.trading.leverage.default))
@@ -209,7 +211,7 @@ class BridgeState:
         current_leverage: int,
         perf: Any,
     ) -> Dict[str, Any]:
-        perf_payload = asdict(perf) if hasattr(perf, "__dataclass_fields__") else {}
+        perf_payload = asdict(perf) if isinstance(perf, PerformanceMetrics) else {}
         if self.gemini:
             return self.gemini.recommend_leverage(
                 symbol, ml_confidence, regime, current_leverage, perf_payload
