@@ -151,7 +151,9 @@ class QuantumEnsemble:
 
     # ── Training ───────────────────────────────────────────────────────────────
 
-    def train(self, df: pd.DataFrame, symbol: str = "BTC") -> Dict[str, float]:
+    def train(
+        self, df: pd.DataFrame, symbol: str = "BTC", save: bool = True
+    ) -> Dict[str, float]:
         """Train all enabled models on historical OHLCV+feature data."""
         log.info("Training ensemble for %s on %d rows", symbol, len(df))
 
@@ -247,7 +249,8 @@ class QuantumEnsemble:
             except Exception as exc:
                 log.warning("LSTM training failed: %s", exc)
 
-        self._save(symbol)
+        if save:
+            self._save(symbol)
         log.info("Ensemble training complete. Scores: %s", scores)
         return scores
 
@@ -270,7 +273,7 @@ class QuantumEnsemble:
             fraction = max(0.35, progress ** 0.5)
             window = max(1, int(total_rows * fraction))
             epoch_df = df.tail(window)
-            scores = self.train(epoch_df, symbol=symbol)
+            scores = self.train(epoch_df, symbol=symbol, save=False)
             weights = self.apply_reinforcement(scores, reinforcement_alpha)
             try:
                 self._save(symbol)

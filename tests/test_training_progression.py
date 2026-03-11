@@ -6,8 +6,9 @@ from src.config import load_config
 from src.ml_models import QuantumEnsemble
 
 
-def test_reinforcement_updates_model_weights():
+def test_reinforcement_updates_model_weights(tmp_path, monkeypatch):
     cfg = load_config()
+    monkeypatch.chdir(tmp_path)
     ensemble = QuantumEnsemble(cfg)
     before = dict(ensemble._model_weights)
 
@@ -16,7 +17,9 @@ def test_reinforcement_updates_model_weights():
     alpha = 0.5
     updated_xgb = (1 - alpha) * before["xgb"] + alpha * 0.9
     updated_gb = (1 - alpha) * before["gb"] + alpha * 0.1
-    expected_total = updated_xgb + updated_gb + before["rf"] + before["lstm"]
+    expected_total = (
+        sum(before.values()) - before["xgb"] - before["gb"] + updated_xgb + updated_gb
+    )
     expected_xgb = updated_xgb / expected_total
     expected_gb = updated_gb / expected_total
 
