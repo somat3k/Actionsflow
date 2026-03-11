@@ -24,6 +24,7 @@ from src.utils import (
     candles_to_dataframe,
     get_logger,
     interval_to_ms,
+    parse_snapshot_end_ms,
     utc_now_ms,
 )
 
@@ -74,7 +75,7 @@ class HyperliquidDataFetcher:
     ) -> pd.DataFrame:
         """Fetch OHLCV candles and enrich with technical indicators."""
         n = lookback_candles or self.cfg.data.lookback_candles
-        end_ms = end_ms or utc_now_ms()
+        end_ms = self._resolve_end_ms(end_ms)
         start_ms = start_ms or (end_ms - n * interval_to_ms(interval))
 
         raw = self._fetch_candle_snapshot(symbol, interval, start_ms, end_ms)
@@ -105,7 +106,7 @@ class HyperliquidDataFetcher:
     ) -> pd.DataFrame:
         """Fetch extended-range OHLCV history for dataset creation."""
         n = lookback_candles or self.cfg.data.lookback_candles
-        end_ms = end_ms or utc_now_ms()
+        end_ms = self._resolve_end_ms(end_ms)
         start_ms = start_ms or (end_ms - n * interval_to_ms(interval))
 
         log.info(
@@ -323,6 +324,15 @@ class HyperliquidDataFetcher:
         }
 
     # ── Private helpers ────────────────────────────────────────────────────────
+
+    def _resolve_end_ms(self, end_ms: Optional[int]) -> int:
+        if end_ms is not None:
+            return end_ms
+        snapshot_raw = os.environ.get("DATA_SNAPSHOT_END_MS")
+        parsed = parse_snapshot_end_ms(snapshot_raw, logger=log)
+        if parsed is not None:
+            return parsed
+        return utc_now_ms()
 
     def _fetch_candle_snapshot(
         self, symbol: str, interval: str, start_ms: int, end_ms: int

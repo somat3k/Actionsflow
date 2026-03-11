@@ -44,7 +44,7 @@ from src.live_trader import LiveTrader
 from src.paper_broker import PaperBroker
 from src.risk_manager import PositionRequest, RiskManager
 from src.supervised_learning import SupervisedLearningModule
-from src.utils import fmt_pct, fmt_usd, get_logger, utc_now
+from src.utils import fmt_pct, fmt_usd, get_logger, parse_snapshot_end_ms, utc_now, utc_now_ms
 
 log = get_logger(__name__)
 
@@ -65,6 +65,39 @@ def _print_github_summary(text: str) -> None:
 def _get_hyperliquid_private_key() -> Optional[str]:
     """Read Hyperliquid private key from supported environment variable names."""
     return os.environ.get("HYPERLIQUID_SECRET") or os.environ.get("HYPERLIQUID_PRIVATE_KEY")
+
+
+def _ensure_data_snapshot_end_ms() -> int:
+    """Ensure DATA_SNAPSHOT_END_MS is set and return the snapshot time."""
+    raw = os.environ.get("DATA_SNAPSHOT_END_MS")
+    parsed = parse_snapshot_end_ms(raw, logger=log)
+    if parsed is not None:
+        return parsed
+    snapshot = utc_now_ms()
+    os.environ["DATA_SNAPSHOT_END_MS"] = str(snapshot)
+    return snapshot
+
+
+def _is_live_trading_enabled() -> bool:
+    """Return True when LIVE_TRADING_ENABLED explicitly enables live orders."""
+    return os.environ.get("LIVE_TRADING_ENABLED", "false").lower() == "true"
+
+
+def _resolve_trading_eligibility(db: DatabaseManager) -> tuple[bool, str]:
+    """Return trading eligibility, honoring overrides before cached evaluation."""
+    override = os.environ.get("TRADING_ELIGIBILITY_OVERRIDE", "").lower() == "true"
+    if override:
+        return True, "TRADING_ELIGIBILITY_OVERRIDE enabled"
+    cached = db.get_cache("evaluation:last_metrics")
+    if isinstance(cached, dict):
+        if cached.get("pause_trading"):
+            return False, cached.get("pause_reason") or "Pause recommended by evaluation"
+        passed = cached.get("pass")
+        if passed is True:
+            return True, "Evaluation thresholds passed"
+        if passed is False:
+            return False, "Evaluation thresholds failed"
+    return False, "No evaluation metrics recorded"
 
 
 def _parse_cached_timestamp(value: Any) -> Optional[datetime]:
@@ -964,10 +997,12 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
     # Gemini performance review
     ai_orchestrator = MultiAIOrchestrator(cfg)
     perf_review = ai_orchestrator.review_performance(trade_history[-20:], asdict(metrics))
-    if perf_review.get("pause_trading"):
-        log.warning("⚠️  Gemini recommends pausing trading: %s", perf_review.get("pause_reason"))
+    pause_trading = bool(perf_review.get("pause_trading"))
+    pause_reason = perf_review.get("pause_reason", "")
+    if pause_trading:
+        log.warning("⚠️  Gemini recommends pausing trading: %s", pause_reason)
         _print_github_summary(
-            f"## ⚠️ Trading Paused\n\n{perf_review.get('pause_reason', '')}"
+            f"## ⚠️ Trading Paused\n\n{pause_reason}"
         )
 
     passes = evaluator.passes_thresholds(metrics)
@@ -996,7 +1031,13 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
     _print_github_summary(summary)
     db.set_cache(
         "evaluation:last_metrics",
-        {"pass": passes, "total_trades": metrics.total_trades, "sharpe_ratio": metrics.sharpe_ratio},
+        {
+            "pass": passes,
+            "total_trades": metrics.total_trades,
+            "sharpe_ratio": metrics.sharpe_ratio,
+            "pause_trading": pause_trading,
+            "pause_reason": pause_reason,
+        },
     )
     db.record_task_completion(
         task_name="model_evaluation",
@@ -1004,6 +1045,92 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
         mode=cfg.trading.mode,
         status="success",
         metadata={"pass": passes, "total_trades": metrics.total_trades},
+    )
+    return 0
+
+
+def run_full_cycle(config_path: Optional[Path] = None) -> int:
+    """Run the full pipeline end-to-end on a consistent data snapshot.
+
+    Returns 0 on success; non-zero if any pipeline stage fails. Behavior can be
+    influenced by DATA_SNAPSHOT_END_MS (freeze data), TRADING_ELIGIBILITY_OVERRIDE
+    (force eligibility), and LIVE_TRADING_ENABLED (allow live execution).
+    """
+    cfg = load_config(config_path)
+    db = _build_db_manager(cfg)
+    log.setLevel(cfg.system.log_level)
+    mode = os.environ.get("TRADING_MODE", cfg.trading.mode)
+
+    log.info("=== FULL PIPELINE CYCLE ===")
+    snapshot_end_ms = _ensure_data_snapshot_end_ms()
+    snapshot_dt = datetime.fromtimestamp(snapshot_end_ms / 1000, tz=timezone.utc)
+    log.info(
+        "Data snapshot end time locked to %s (%s)",
+        snapshot_end_ms,
+        snapshot_dt.isoformat(),
+    )
+
+    steps = [
+        ("training", run_training),
+        ("signal", run_paper_signal),
+        ("evaluate", run_evaluation),
+        ("export", run_model_export),
+    ]
+    for name, step in steps:
+        step_result = step(config_path)
+        if step_result != 0:
+            log.error("Full cycle failed during %s step", name)
+            db.record_task_completion(
+                task_name="full_cycle",
+                run_type="full-cycle",
+                mode=mode,
+                status="failed",
+                metadata={"failed_step": name},
+            )
+            return step_result
+
+    eligible, reason = _resolve_trading_eligibility(db)
+    _print_github_summary(
+        "## 🧭 Trading Eligibility\n\n"
+        f"- **Allowed:** {'✅' if eligible else '❌'}\n"
+        f"- **Reason:** {reason}\n"
+    )
+    if not eligible:
+        log.warning("Trading eligibility check failed: %s", reason)
+        db.record_task_completion(
+            task_name="full_cycle",
+            run_type="full-cycle",
+            mode=mode,
+            status="success",
+            metadata={"trading_allowed": False, "reason": reason},
+        )
+        return 0
+
+    if mode == "live":
+        if not _is_live_trading_enabled():
+            log.warning("LIVE_TRADING_ENABLED not set; skipping live trading step")
+        else:
+            if os.environ.pop("DATA_SNAPSHOT_END_MS", None) is not None:
+                log.info(
+                    "Cleared DATA_SNAPSHOT_END_MS for live trading; using current market data"
+                )
+            trade_rc = run_live_signal(config_path)
+            if trade_rc != 0:
+                db.record_task_completion(
+                    task_name="full_cycle",
+                    run_type="full-cycle",
+                    mode=mode,
+                    status="failed",
+                    metadata={"failed_step": "live_signal"},
+                )
+                return trade_rc
+
+    db.record_task_completion(
+        task_name="full_cycle",
+        run_type="full-cycle",
+        mode=mode,
+        status="success",
+        metadata={"trading_allowed": True, "snapshot_end_ms": snapshot_end_ms},
     )
     return 0
 
@@ -1088,7 +1215,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--run-type",
         choices=["training", "signal", "evaluate", "train-models", "infinity-train",
-                 "export-models"],
+                 "export-models", "full-cycle"],
         required=True,
         help="What to run",
     )
@@ -1124,6 +1251,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return run_evaluation(cfg_path)
     elif args.run_type == "export-models":
         return run_model_export(cfg_path)
+    elif args.run_type == "full-cycle":
+        return run_full_cycle(cfg_path)
     else:
         log.error("Unknown run type: %s", args.run_type)
         return 1

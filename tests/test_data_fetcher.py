@@ -187,6 +187,35 @@ class TestHyperliquidDataFetcher:
             df = fetcher.fetch_candles("BTC", "15m", lookback_candles=50)
         assert df.empty
 
+    def test_fetch_candles_respects_snapshot_end_ms(self, fetcher, monkeypatch):
+        snapshot_end_ms = 1_700_000_123_000
+        monkeypatch.setenv("DATA_SNAPSHOT_END_MS", str(snapshot_end_ms))
+        captured = {}
+
+        def _fake_fetch(_symbol, _interval, _start_ms, end_ms):
+            captured["end_ms"] = end_ms
+            return _make_candle_list(300)
+
+        with patch.object(fetcher, "_fetch_candle_snapshot", side_effect=_fake_fetch):
+            df = fetcher.fetch_candles("BTC", "15m", lookback_candles=50)
+        assert not df.empty
+        assert captured["end_ms"] == snapshot_end_ms
+
+    def test_fetch_candles_invalid_snapshot_falls_back(self, fetcher, monkeypatch):
+        monkeypatch.setenv("DATA_SNAPSHOT_END_MS", "123")
+        fallback_end_ms = 1_700_000_000_000
+        monkeypatch.setattr("src.data_fetcher.utc_now_ms", lambda: fallback_end_ms)
+        captured = {}
+
+        def _fake_fetch(_symbol, _interval, _start_ms, end_ms):
+            captured["end_ms"] = end_ms
+            return _make_candle_list(300)
+
+        with patch.object(fetcher, "_fetch_candle_snapshot", side_effect=_fake_fetch):
+            df = fetcher.fetch_candles("BTC", "15m", lookback_candles=50)
+        assert not df.empty
+        assert captured["end_ms"] == fallback_end_ms
+
     def test_fetch_order_book(self, fetcher):
         mock_response = {
             "levels": [

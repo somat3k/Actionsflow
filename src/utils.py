@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+_SNAPSHOT_MAX_FUTURE_OFFSET_MS = 7 * 24 * 60 * 60 * 1000
+
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +42,39 @@ def utc_now() -> datetime:
 def utc_now_ms() -> int:
     """Current UTC timestamp in milliseconds."""
     return int(time.time() * 1000)
+
+
+def parse_snapshot_end_ms(
+    raw: Optional[str],
+    logger: Optional[logging.Logger] = None,
+) -> Optional[int]:
+    """Parse DATA_SNAPSHOT_END_MS into an integer timestamp.
+
+    Returns None when the value is missing, invalid, or outside a reasonable
+    UTC epoch range. When a logger is provided, invalid values emit a warning
+    before returning None.
+    """
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        if logger:
+            logger.warning(
+                "Invalid DATA_SNAPSHOT_END_MS=%s; ignoring value",
+                raw,
+            )
+        return None
+    min_epoch_ms = int(datetime(2000, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+    max_epoch_ms = utc_now_ms() + _SNAPSHOT_MAX_FUTURE_OFFSET_MS
+    if value < min_epoch_ms or value > max_epoch_ms:
+        if logger:
+            logger.warning(
+                "Invalid DATA_SNAPSHOT_END_MS=%s; ignoring value",
+                raw,
+            )
+        return None
+    return value
 
 
 def ms_to_dt(ms: int) -> datetime:
