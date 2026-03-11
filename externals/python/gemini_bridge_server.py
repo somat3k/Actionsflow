@@ -113,7 +113,7 @@ class BridgeState:
         recent_trades = payload.get("recent_trades", [])
         if not isinstance(recent_trades, list):
             recent_trades = []
-        recent_trades = [t for t in recent_trades if isinstance(t, dict) and "pnl" in t]
+        recent_trades = self._normalize_trades(recent_trades)
         initial_equity = self._resolve_initial_equity(payload, equity, recent_trades)
         perf = compute_metrics(recent_trades, initial_equity, equity)
 
@@ -261,6 +261,20 @@ class BridgeState:
         if initial_equity <= 0:
             initial_equity = 1.0
         return initial_equity
+
+    def _normalize_trades(self, trades: list[Any]) -> list[Dict[str, Any]]:
+        normalized: list[Dict[str, Any]] = []
+        for trade in trades:
+            if not isinstance(trade, dict) or "pnl" not in trade:
+                continue
+            try:
+                pnl = float(trade.get("pnl"))
+            except (TypeError, ValueError):
+                continue
+            cleaned = dict(trade)
+            cleaned["pnl"] = pnl
+            normalized.append(cleaned)
+        return normalized
 
     @staticmethod
     def _coerce_float(value: Any, default: float) -> float:

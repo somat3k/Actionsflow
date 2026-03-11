@@ -144,6 +144,8 @@ Notes:
 - `positions.long` / `positions.short` are counts of open positions for the symbol.
 - `initial_equity` is optional and lets you override the performance baseline used for metrics.
 - Set `reset_daily: true` to reset the risk manager daily tracking when you start a new session.
+- Leverage and position sizing are derived from the ML model confidence (`model.confidence`).
+  The top-level `confidence` field includes any Gemini adjustment for reporting.
 - `position` is `null` when the final signal is `0` or the model is unavailable. It uses the same
   RiskManager logic as the core project.
 
