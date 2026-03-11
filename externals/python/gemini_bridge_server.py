@@ -190,6 +190,36 @@ class BridgeState:
             "metrics": asdict(perf),
         }
 
+    def handle_webhook(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {"status": "error", "message": "payload must be a JSON object"}
+        signals = payload.get("signals")
+        if signals is None:
+            entries = [payload]
+        elif isinstance(signals, list) and signals:
+            entries = signals
+        else:
+            return {"status": "error", "message": "signals must be a non-empty list"}
+
+        results: list[Dict[str, Any]] = []
+        ok_count = 0
+        for entry in entries:
+            result = self._process_webhook_entry(entry)
+            if result.get("status") == "ok":
+                ok_count += 1
+            results.append(result)
+
+        overall = "ok"
+        if ok_count == 0:
+            overall = "error"
+        elif ok_count != len(results):
+            overall = "partial"
+
+        return {
+            "status": overall,
+            "results": results,
+        }
+
     def _analyse_with_gemini(
         self, symbol: str, ml_signal: Dict[str, Any], market_snapshot: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -276,6 +306,102 @@ class BridgeState:
             normalized.append(cleaned)
         return normalized
 
+    def _process_webhook_entry(self, entry: Any) -> Dict[str, Any]:
+        if not isinstance(entry, dict):
+            return {"status": "error", "message": "signal entry must be a JSON object"}
+        raw_symbol = entry.get("symbol")
+        if raw_symbol is None or (isinstance(raw_symbol, str) and not raw_symbol.strip()):
+            return {"status": "error", "message": "symbol missing"}
+        symbol = str(raw_symbol)
+        platform = entry.get("platform", "unknown")
+        signal = entry.get("signal")
+        try:
+            signal = int(signal)
+        except (TypeError, ValueError):
+            return {
+                "status": "error",
+                "symbol": symbol,
+                "platform": platform,
+                "message": "signal must be 0, 1, or 2",
+            }
+        if signal not in (0, 1, 2):
+            return {
+                "status": "error",
+                "symbol": symbol,
+                "platform": platform,
+                "message": "signal must be 0, 1, or 2",
+            }
+
+        confidence = self._coerce_float(entry.get("confidence"), 0.0)
+        price = self._coerce_float(
+            entry.get("current_price", entry.get("price", entry.get("entry_price"))), 0.0
+        )
+        atr = self._coerce_float(entry.get("atr"), 0.0)
+        if signal in (1, 2) and price <= 0:
+            return {
+                "status": "error",
+                "symbol": symbol,
+                "platform": platform,
+                "message": "current_price required for non-flat signals",
+            }
+
+        account_payload = entry.get("account")
+        positions_payload = entry.get("positions")
+        account = account_payload if isinstance(account_payload, dict) else {}
+        positions = positions_payload if isinstance(positions_payload, dict) else {}
+        equity = self._coerce_float(account.get("equity"), self.cfg.trading.initial_equity)
+        default_leverage = self.cfg.trading.leverage.default or self.cfg.trading.leverage.min
+        current_leverage = int(self._coerce_float(account.get("leverage"), default_leverage))
+        open_positions = int(positions.get("long", 0)) + int(positions.get("short", 0))
+
+        recent_trades = entry.get("recent_trades", [])
+        if not isinstance(recent_trades, list):
+            recent_trades = []
+        recent_trades = self._normalize_trades(recent_trades)
+        initial_equity = self._resolve_initial_equity(entry, equity, recent_trades)
+        perf = compute_metrics(recent_trades, initial_equity, equity)
+
+        recommended = entry.get("recommended_leverage", entry.get("leverage"))
+        recommended_leverage = int(self._coerce_float(recommended, current_leverage))
+
+        with self._lock:
+            if entry.get("reset_daily"):
+                self.risk_mgr.reset_daily_tracking(equity)
+            final_leverage = self.risk_mgr.adjust_leverage(
+                current_leverage, confidence, recommended_leverage
+            )
+            position_payload = None
+            if signal in (1, 2):
+                position_spec = self.risk_mgr.compute_position(
+                    PositionRequest(
+                        symbol=symbol,
+                        signal=signal,
+                        confidence=confidence,
+                        current_price=price,
+                        atr=atr,
+                        equity=equity,
+                        leverage=final_leverage,
+                        open_positions=open_positions,
+                    ),
+                    trade_history=recent_trades,
+                )
+                position_payload = asdict(position_spec)
+
+        return {
+            "status": "ok",
+            "platform": platform,
+            "symbol": symbol,
+            "signal": signal,
+            "confidence": confidence,
+            "leverage": {
+                "current": current_leverage,
+                "recommended": recommended_leverage,
+                "final": final_leverage,
+            },
+            "position": position_payload,
+            "metrics": asdict(perf),
+        }
+
     @staticmethod
     def _coerce_float(value: Any, default: float) -> float:
         try:
@@ -297,44 +423,28 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send_json({"status": "ok"})
 
     def do_POST(self) -> None:
-        if self.path.rstrip("/") != "/signal":
+        path = self.path.rstrip("/")
+        if path not in {"/signal", "/webhook"}:
             self.send_error(404, "Not found")
             return
         if not self._is_authorized():
             self._send_json({"status": "error", "message": "unauthorized"}, status=401)
             return
-        try:
-            content_length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            self._send_json({"status": "error", "message": "invalid content length"}, status=400)
-            return
-        if content_length <= 0:
-            self._send_json({"status": "error", "message": "empty request body"}, status=400)
-            return
-        if content_length > MAX_BODY_BYTES:
-            self._send_json({"status": "error", "message": "payload too large"}, status=413)
-            return
-        try:
-            raw = self.rfile.read(content_length).decode("utf-8")
-        except UnicodeDecodeError:
-            self._send_json({"status": "error", "message": "invalid encoding"}, status=400)
-            return
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            self._send_json({"status": "error", "message": "invalid JSON"}, status=400)
-            return
-        if not isinstance(payload, dict):
-            self._send_json({"status": "error", "message": "payload must be a JSON object"}, status=400)
+        payload = self._read_json_body()
+        if payload is None:
             return
 
         try:
-            response = STATE.handle_payload(payload)
+            if path == "/signal":
+                response = STATE.handle_payload(payload)
+                status = 200 if response.get("status") in {"ok", "model_unavailable"} else 400
+            else:
+                response = STATE.handle_webhook(payload)
+                status = 200 if response.get("status") in {"ok", "partial"} else 400
         except Exception as exc:
             log.exception("Bridge request failed: %s", exc)
             self._send_json({"status": "error", "message": "internal error"}, status=500)
             return
-        status = 200 if response.get("status") in {"ok", "model_unavailable"} else 400
         self._send_json(response, status=status)
 
     def log_message(self, format_string: str, *args: Any) -> None:
@@ -347,6 +457,33 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_json_body(self) -> Optional[Dict[str, Any]]:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._send_json({"status": "error", "message": "invalid content length"}, status=400)
+            return None
+        if content_length <= 0:
+            self._send_json({"status": "error", "message": "empty request body"}, status=400)
+            return None
+        if content_length > MAX_BODY_BYTES:
+            self._send_json({"status": "error", "message": "payload too large"}, status=413)
+            return None
+        try:
+            raw = self.rfile.read(content_length).decode("utf-8")
+        except UnicodeDecodeError:
+            self._send_json({"status": "error", "message": "invalid encoding"}, status=400)
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            self._send_json({"status": "error", "message": "invalid JSON"}, status=400)
+            return None
+        if not isinstance(payload, dict):
+            self._send_json({"status": "error", "message": "payload must be a JSON object"}, status=400)
+            return None
+        return payload
 
     def _is_authorized(self) -> bool:
         if not BRIDGE_TOKEN:

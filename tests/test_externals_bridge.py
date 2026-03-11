@@ -50,6 +50,19 @@ def _make_payload() -> dict:
     }
 
 
+def _make_webhook_entry(symbol: str = "EURUSD") -> dict:
+    return {
+        "platform": "mql4",
+        "symbol": symbol,
+        "signal": 1,
+        "confidence": 0.62,
+        "current_price": 1.0837,
+        "atr": 0.0012,
+        "account": {"equity": 10000, "balance": 10000, "leverage": 30},
+        "positions": {"long": 0, "short": 0},
+    }
+
+
 def _build_state(monkeypatch, ensemble_cls) -> bridge.BridgeState:
     monkeypatch.setattr(bridge, "QuantumEnsemble", ensemble_cls)
     monkeypatch.setattr(bridge, "GeminiOrchestrator", None)
@@ -88,3 +101,25 @@ def test_handle_payload_initial_equity_override(monkeypatch):
     response = state.handle_payload(payload)
     assert response["status"] == "ok"
     assert response["metrics"]["initial_equity"] == pytest.approx(9000.0)
+
+
+def test_handle_webhook_single_signal(monkeypatch):
+    state = _build_state(monkeypatch, DummyEnsemble)
+    response = state.handle_webhook({"signals": [_make_webhook_entry()]})
+    assert response["status"] == "ok"
+    assert response["results"][0]["status"] == "ok"
+    assert response["results"][0]["position"] is not None
+
+
+def test_handle_webhook_partial(monkeypatch):
+    state = _build_state(monkeypatch, DummyEnsemble)
+    payload = {
+        "signals": [
+            _make_webhook_entry(),
+            {"platform": "mql5", "signal": 1},
+        ]
+    }
+    response = state.handle_webhook(payload)
+    assert response["status"] == "partial"
+    assert response["results"][0]["status"] == "ok"
+    assert response["results"][1]["status"] == "error"

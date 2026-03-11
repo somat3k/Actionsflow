@@ -149,6 +149,62 @@ Notes:
 - `position` is `null` when the final signal is `0` or the model is unavailable. It uses the same
   RiskManager logic as the core project.
 
+### Webhook (system trading signals)
+
+Use `POST /webhook` to push **system-generated** trading signals (no ML/Gemini inference). This
+supports multi-platform dispatch by sending a `signals` array.
+
+```json
+{
+  "signals": [
+    {
+      "platform": "mql4",
+      "symbol": "EURUSD",
+      "signal": 1,
+      "confidence": 0.62,
+      "current_price": 1.0837,
+      "atr": 0.0012,
+      "account": { "equity": 10000, "balance": 10000, "leverage": 30 },
+      "positions": { "long": 0, "short": 0 }
+    },
+    {
+      "platform": "ctrader",
+      "symbol": "GBPUSD",
+      "signal": 2,
+      "confidence": 0.58,
+      "current_price": 1.264,
+      "atr": 0.0018,
+      "account": { "equity": 8200, "balance": 8200, "leverage": 20 },
+      "positions": { "long": 1, "short": 0 }
+    }
+  ]
+}
+```
+
+```json
+{
+  "status": "ok",
+  "results": [
+    {
+      "status": "ok",
+      "platform": "mql4",
+      "symbol": "EURUSD",
+      "signal": 1,
+      "confidence": 0.62,
+      "leverage": { "current": 30, "recommended": 30, "final": 30 },
+      "position": { "symbol": "EURUSD", "side": "long", "entry_price": 1.0837, "size_usd": 1200.0, "size_contracts": 1107.5, "leverage": 30, "stop_loss": 1.0822, "take_profit": 1.0861, "trailing_stop_pct": 0.015, "risk_usd": 27.6, "allowed": true, "reject_reason": "" },
+      "metrics": { "total_trades": 0, "initial_equity": 10000, "final_equity": 10000, "total_return_pct": 0.0 }
+    }
+  ]
+}
+```
+
+Notes:
+- You can also send a single signal object without wrapping it in `signals`.
+- `signal` must be `0`, `1`, or `2`. `current_price` is required when `signal` is `1` or `2`.
+- Optional `recommended_leverage` (or `leverage`) lets the webhook suggest a target leverage.
+- Webhook responses include the same `metrics` schema as `/signal` (example abbreviated above).
+
 ## Python Bridge (shared)
 
 Start the bridge server (uses the repository’s ML models and Gemini orchestrator):
