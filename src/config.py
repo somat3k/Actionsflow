@@ -89,7 +89,7 @@ class DataConfig:
 
 
 _DEFAULT_MODEL_WEIGHTS: Dict[str, float] = {
-    "xgb": 0.30, "gb": 0.10, "rf": 0.20, "lstm": 0.25, "linear": 0.15,
+    "xgb": 0.25, "gb": 0.10, "rf": 0.15, "lstm": 0.20, "linear": 0.10, "tree_clf": 0.20,
 }
 
 
@@ -106,6 +106,9 @@ class MLConfig:
     model_weights: Dict[str, float] = field(
         default_factory=lambda: dict(_DEFAULT_MODEL_WEIGHTS)
     )
+    # ExtraTrees (tree-classifier-decision-making-system) hyperparameters
+    extra_trees_n_estimators: int = 200
+    extra_trees_max_depth: int = 10
     # Infinity-loop supervised learning
     infinity_loop_enabled: bool = True
     infinity_loop_max_epochs: int = 0         # 0 = infinite
@@ -339,11 +342,11 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     # Load per-model weights from YAML if present.
     models_raw = ml_raw.get("models", {})
     default_weights = {
-        "xgb": 0.30, "gb": 0.10, "rf": 0.20, "lstm": 0.25, "linear": 0.15,
+        "xgb": 0.25, "gb": 0.10, "rf": 0.15, "lstm": 0.20, "linear": 0.10, "tree_clf": 0.20,
     }
     yaml_name_map = {
         "xgboost": "xgb", "gradient_boost": "gb", "random_forest": "rf",
-        "lstm": "lstm", "linear": "linear",
+        "lstm": "lstm", "linear": "linear", "extra_trees": "tree_clf",
     }
     model_weights = dict(default_weights)
     for yaml_name, internal_name in yaml_name_map.items():
@@ -363,6 +366,12 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             os.environ.get("REINFORCEMENT_ALPHA", training.get("reinforcement_alpha", 0.1))
         ),
         model_weights=model_weights,
+        extra_trees_n_estimators=int(
+            models_raw.get("extra_trees", {}).get("n_estimators", 200)
+        ),
+        extra_trees_max_depth=int(
+            models_raw.get("extra_trees", {}).get("max_depth", 10)
+        ),
         infinity_loop_enabled=bool(infinity_raw.get("enabled", True)),
         infinity_loop_max_epochs=int(infinity_raw.get("max_epochs", 0)),
         infinity_zero_trade_threshold=int(infinity_raw.get("zero_trade_threshold", 0)),

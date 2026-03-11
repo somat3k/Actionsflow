@@ -1,23 +1,33 @@
 # ══════════════════════════════════════════════════════════════════════════════
 #  Paper Trading – ML Model Training
-#  Trains all ML models (LSTM, XGBoost, Gradient Boosting, Random Forest) on
-#  historical Hyperliquid data using the paper broker for walk-forward validation.
-#  Runs daily and on demand.
+#  Trains all ML models (LSTM, XGBoost, Gradient Boosting, Random Forest,
+#  ExtraTrees tree-classifier) on historical Hyperliquid data using the paper
+#  broker for walk-forward validation.
+#  Runs 4 times per day (every 6 hours) across multiplex timeframes
+#  (1m, 5m, 15m, 1h, 1d) and on demand.
 # ══════════════════════════════════════════════════════════════════════════════
 
 name: Paper Trading – Model Training
 
 on:
-  # Daily retraining at 00:00 UTC
+  # 4 training sessions per day at 06:00, 12:00, 18:00, 00:00 UTC
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 6 * * *"    # Session 1 – morning (after daily data download at 02:00)
+    - cron: "0 12 * * *"   # Session 2 – midday
+    - cron: "0 18 * * *"   # Session 3 – evening
+    - cron: "0 0 * * *"    # Session 4 – midnight
+
+  # Triggered by the data-download workflow after fresh CSVs are written
+  repository_dispatch:
+    types:
+      - quantum_retrain
 
   workflow_dispatch:
     inputs:
       symbols:
         description: "Comma-separated symbols to train (e.g. BTC,ETH,SOL,ARB)"
         required: false
-        default: "BTC,ETH,SOL,ARB,ZRO,AAVE,ADA,CATI"
+        default: "BTC,ETH,SOL,ARB,ZRO,AAVE,FLOKI,SHIB,XAUT"
       lookback_candles:
         description: "Number of candles to use for training"
         required: false
@@ -68,25 +78,45 @@ jobs:
           restore-keys: |
             ml-models-
 
+      - name: Restore OHLCV CSV cache
+        uses: actions/cache@v4
+        with:
+          path: datasets/csv/
+          key: ohlcv-csv-${{ github.ref_name }}
+          restore-keys: |
+            ohlcv-csv-${{ github.ref_name }}-
+            ohlcv-csv-
+
       - name: Create directories
-        run: mkdir -p models results .trading_state
+        run: mkdir -p models results .trading_state datasets/csv
 
       - name: Set training environment
         run: |
-          echo "TRAINING_SYMBOLS=${{ inputs.symbols || 'BTC,ETH,SOL,ARB,ZRO,AAVE,ADA,CATI' }}" >> "$GITHUB_ENV"
+          echo "TRAINING_SYMBOLS=${{ inputs.symbols || 'BTC,ETH,SOL,ARB,ZRO,AAVE,FLOKI,SHIB,XAUT' }}" >> "$GITHUB_ENV"
           echo "LOOKBACK_CANDLES=${{ inputs.lookback_candles || '2000' }}" >> "$GITHUB_ENV"
           echo "TRAINING_EPOCHS=${{ inputs.training_epochs || '3' }}" >> "$GITHUB_ENV"
           echo "FORCE_RETRAIN=${{ inputs.force_retrain || 'false' }}" >> "$GITHUB_ENV"
 
-      - name: Run model training
+      - name: Run model training (multiplex 1m/5m/15m/1h/1d)
         env:
           TRADING_MODE: paper
           LOG_LEVEL: INFO
         run: |
-          echo "## 🤖 Model Training Started" >> "$GITHUB_STEP_SUMMARY"
+          HOUR=$(date -u +%H)
+          SESSION="unknown"
+          case "$HOUR" in
+            06) SESSION="1-of-4 (morning)" ;;
+            12) SESSION="2-of-4 (midday)" ;;
+            18) SESSION="3-of-4 (evening)" ;;
+            00|0) SESSION="4-of-4 (midnight)" ;;
+            *) SESSION="on-demand" ;;
+          esac
+          echo "## 🤖 Model Training Session ${SESSION}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Symbols:** $TRAINING_SYMBOLS" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Lookback:** $LOOKBACK_CANDLES candles" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Epochs:** $TRAINING_EPOCHS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Timeframes:** 1m, 5m, 15m, 1h, 1d (multiplex)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Models:** LSTM, XGBoost, GradientBoost, RandomForest, ExtraTrees (tree-classifier), Linear" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           python -m src.main --run-type train-models --mode paper
 
@@ -145,3 +175,4 @@ jobs:
               }
             });
             core.info('Dispatched quantum_trade_signal after training');
+

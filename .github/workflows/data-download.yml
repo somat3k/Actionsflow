@@ -1,0 +1,137 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Daily OHLCV Data Download
+#  Downloads fresh candlestick data from Hyperliquid for all enabled trading
+#  symbols across all configured timeframes (1m, 5m, 15m, 1h, 1d) and saves
+#  them as CSV files.  Runs once per day and uploads the CSVs as artifacts so
+#  that subsequent training sessions always start with up-to-date data.
+#  Schedule: 02:00 UTC daily (before the 06:00 training session).
+# ══════════════════════════════════════════════════════════════════════════════
+
+name: Daily OHLCV Data Download
+
+on:
+  schedule:
+    - cron: "0 2 * * *"   # 02:00 UTC every day
+
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Comma-separated symbols override (empty = all enabled)"
+        required: false
+        default: ""
+      mode:
+        description: "Trading mode (paper uses live API, test uses synthetic data)"
+        required: false
+        default: "paper"
+        type: choice
+        options:
+          - paper
+          - test
+
+concurrency:
+  group: data-download
+  cancel-in-progress: true
+
+jobs:
+  download:
+    name: Download OHLCV CSVs
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore existing CSV cache
+        uses: actions/cache@v4
+        with:
+          path: datasets/csv/
+          key: ohlcv-csv-${{ github.ref_name }}-${{ github.run_number }}
+          restore-keys: |
+            ohlcv-csv-${{ github.ref_name }}-
+
+      - name: Create directories
+        run: mkdir -p datasets/csv results
+
+      - name: Download OHLCV data for all symbols
+        env:
+          TRADING_MODE: ${{ inputs.mode || 'paper' }}
+          TRAINING_SYMBOLS: ${{ inputs.symbols }}
+          LOG_LEVEL: INFO
+        run: |
+          echo "## 📥 Daily OHLCV Data Download" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Date:** $(date -u)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Mode:** ${{ inputs.mode || 'paper' }}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "${{ inputs.symbols }}" ]]; then
+            echo "- **Symbols filter:** ${{ inputs.symbols }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          python -m src.main --run-type download-data --mode "${{ inputs.mode || 'paper' }}"
+
+      - name: Show download summary
+        if: always()
+        run: |
+          if [ -f results/data_download_summary.json ]; then
+            echo "### 📊 Download Summary" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat results/data_download_summary.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            # Count CSVs
+            CSV_COUNT=$(find datasets/csv -name "*.csv" 2>/dev/null | wc -l)
+            echo "- **CSV files written:** ${CSV_COUNT}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Save CSV cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: datasets/csv/
+          key: ohlcv-csv-${{ github.ref_name }}-${{ github.run_number }}
+
+      - name: Upload CSV artefacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ohlcv-csv-${{ github.run_number }}
+          path: |
+            datasets/csv/
+            results/data_download_summary.json
+          retention-days: 30
+
+  # ── Trigger training session after fresh data is available ────────────────
+  trigger-training:
+    name: Trigger Morning Training
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: download
+    if: success()
+    steps:
+      - name: Dispatch training workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'quantum_retrain',
+              client_payload: {
+                reason: 'Daily OHLCV download completed – fresh data available',
+                triggered_by: 'data-download',
+                session: '1-of-4'
+              }
+            });
+            core.info('Dispatched quantum_retrain after data download');

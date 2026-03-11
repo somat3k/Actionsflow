@@ -61,11 +61,12 @@ class TestConfigDualGemini:
 class TestConfigModelWeights:
     def test_model_weights_loaded_from_yaml(self):
         cfg = load_config()
-        assert cfg.ml.model_weights["xgb"] == 0.30
+        assert cfg.ml.model_weights["xgb"] == 0.25
         assert cfg.ml.model_weights["gb"] == 0.10
-        assert cfg.ml.model_weights["rf"] == 0.20
-        assert cfg.ml.model_weights["lstm"] == 0.25
-        assert cfg.ml.model_weights["linear"] == 0.15
+        assert cfg.ml.model_weights["rf"] == 0.15
+        assert cfg.ml.model_weights["lstm"] == 0.20
+        assert cfg.ml.model_weights["linear"] == 0.10
+        assert cfg.ml.model_weights["tree_clf"] == 0.20
 
 
 # ── Gemini orchestrator tests ─────────────────────────────────────────────────
@@ -138,6 +139,106 @@ class TestQuantumEnsembleLinear:
         result = ensemble.predict(df)
 
         assert "linear" in result.get("model_signals", {})
+
+
+class TestExtraTreesClassifier:
+    """Verify ExtraTreesClassifier trains, predicts, and persists correctly."""
+
+    def test_tree_clf_trained_in_scores(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TRADING_MODE", "test")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "models").mkdir()
+
+        from src.ml_models import QuantumEnsemble
+        from src.data_fetcher import HyperliquidDataFetcher
+
+        cfg = load_config()
+        fetcher = HyperliquidDataFetcher(cfg)
+        df = fetcher.fetch_candles("BTC", "1m")
+        ensemble = QuantumEnsemble(cfg)
+        scores = ensemble.train(df, symbol="BTC")
+
+        assert "tree_clf" in scores, "ExtraTrees score should be present in train() output"
+        assert 0.0 < scores["tree_clf"] <= 1.0
+        assert ensemble.tree_clf is not None
+
+    def test_tree_clf_in_model_signals(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TRADING_MODE", "test")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "models").mkdir()
+
+        from src.ml_models import QuantumEnsemble
+        from src.data_fetcher import HyperliquidDataFetcher
+
+        cfg = load_config()
+        fetcher = HyperliquidDataFetcher(cfg)
+        df = fetcher.fetch_candles("BTC", "1m")
+        ensemble = QuantumEnsemble(cfg)
+        ensemble.train(df, symbol="BTC")
+        result = ensemble.predict(df)
+
+        assert "tree_clf" in result.get("model_signals", {}), (
+            "ExtraTrees should appear in model_signals after predict()"
+        )
+
+    def test_tree_clf_save_and_load(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TRADING_MODE", "test")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "models").mkdir()
+
+        from src.ml_models import QuantumEnsemble
+        from src.data_fetcher import HyperliquidDataFetcher
+
+        cfg = load_config()
+        fetcher = HyperliquidDataFetcher(cfg)
+        df = fetcher.fetch_candles("BTC", "1m")
+
+        ensemble = QuantumEnsemble(cfg)
+        ensemble.train(df, symbol="BTC")
+        assert ensemble.tree_clf is not None
+
+        # Load into a fresh ensemble – tree_clf should be restored.
+        ensemble2 = QuantumEnsemble(cfg)
+        loaded = ensemble2.load("BTC")
+        assert loaded, "load() should return True when models exist"
+        assert ensemble2.tree_clf is not None, "tree_clf should be restored after load()"
+
+    def test_tree_clf_in_train_timeframe(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TRADING_MODE", "test")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "models").mkdir()
+
+        from src.ml_models import QuantumEnsemble
+        from src.data_fetcher import HyperliquidDataFetcher
+
+        cfg = load_config()
+        fetcher = HyperliquidDataFetcher(cfg)
+        df = fetcher.fetch_candles("BTC", "1m")
+        ensemble = QuantumEnsemble(cfg)
+        scores = ensemble.train_timeframe(df, "BTC", "1m")
+
+        assert "tree_clf" in scores, "ExtraTrees score should appear in train_timeframe()"
+
+    def test_extra_trees_hyperparams_from_config(self, tmp_path, monkeypatch):
+        """ExtraTrees hyperparameters should be read from MLConfig."""
+        monkeypatch.setenv("TRADING_MODE", "test")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "models").mkdir()
+
+        from src.ml_models import QuantumEnsemble
+        from src.data_fetcher import HyperliquidDataFetcher
+
+        cfg = load_config()
+        assert cfg.ml.extra_trees_n_estimators == 200
+        assert cfg.ml.extra_trees_max_depth == 10
+
+        fetcher = HyperliquidDataFetcher(cfg)
+        df = fetcher.fetch_candles("BTC", "1m")
+        ensemble = QuantumEnsemble(cfg)
+        ensemble.train(df, symbol="BTC")
+
+        assert ensemble.tree_clf.n_estimators == cfg.ml.extra_trees_n_estimators
+        assert ensemble.tree_clf.max_depth == cfg.ml.extra_trees_max_depth
 
 
 class TestPerTimeframeEpochTraining:
