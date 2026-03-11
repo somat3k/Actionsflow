@@ -39,6 +39,23 @@ _HL_EXCHANGE_URL = "https://api.hyperliquid.xyz/exchange"
 _HL_INFO_URL = "https://api.hyperliquid.xyz/info"
 _REQUEST_TIMEOUT = 30
 
+# ── Symbol registry (loaded once from JSON) ───────────────────────────────────
+_SYMBOLS_FILE = Path(__file__).resolve().parent.parent / "config" / "symbols.json"
+
+
+def _load_symbol_index_map() -> Dict[str, int]:
+    """Load symbol → asset-index mapping from config/symbols.json."""
+    try:
+        with open(_SYMBOLS_FILE) as fh:
+            data = json.load(fh)
+        return {entry["name"].upper(): int(entry["asset_index"]) for entry in data.get("symbols", [])}
+    except Exception as exc:
+        log.warning("Failed to load symbols.json (%s); using empty fallback", exc)
+        return {}
+
+
+_SYMBOL_INDEX_MAP: Dict[str, int] = _load_symbol_index_map()
+
 
 @dataclass
 class LiveOrderResult:
@@ -255,9 +272,8 @@ class LiveTrader:
 
     @staticmethod
     def _asset_index(symbol: str) -> int:
-        """Return Hyperliquid asset index. Needs full meta lookup in production."""
-        _KNOWN = {"BTC": 0, "ETH": 1, "SOL": 2, "ARB": 3, "OP": 4, "MATIC": 5}
-        return _KNOWN.get(symbol.upper(), 0)
+        """Return Hyperliquid asset index, loaded from config/symbols.json."""
+        return _SYMBOL_INDEX_MAP.get(symbol.upper(), 0)
 
     def _dry_run_result(self, spec: PositionSpec) -> LiveOrderResult:
         return LiveOrderResult(

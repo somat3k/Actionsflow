@@ -982,11 +982,68 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
     return 0
 
 
+def run_download_data(config_path: Optional[Path] = None) -> int:
+    """Download fresh OHLCV data from Hyperliquid for all enabled symbols and
+    all configured timeframes, saving each as a CSV file.
+
+    This is intended to run once per day via the ``data-download`` GitHub
+    Actions workflow so that training sessions always start with up-to-date
+    market data.  The CSVs are written to ``data.historical_csv_dir`` and
+    merged with any existing data (deduplicating by timestamp).
+    """
+    cfg = load_config(config_path)
+    fetcher = HyperliquidDataFetcher(cfg)
+
+    enabled_markets = [m for m in cfg.trading.markets if m.enabled]
+    all_timeframes = [
+        cfg.data.primary_interval,
+        cfg.data.secondary_interval,
+        cfg.data.macro_interval,
+        cfg.data.hourly_interval,
+        cfg.data.daily_interval,
+    ]
+
+    log.info(
+        "=== DATA DOWNLOAD | %d symbols × %d timeframes ===",
+        len(enabled_markets),
+        len(all_timeframes),
+    )
+
+    results: Dict[str, Any] = {}
+    for market in enabled_markets:
+        symbol = market.symbol
+        results[symbol] = {}
+        for tf in all_timeframes:
+            try:
+                csv_path = fetcher.save_ohlcv_csv(symbol, tf)
+                results[symbol][tf] = str(csv_path)
+                log.info("Downloaded %s@%s → %s", symbol, tf, csv_path)
+            except Exception as exc:
+                log.warning("Failed to download %s@%s: %s", symbol, tf, exc)
+                results[symbol][tf] = None
+
+    Path("results").mkdir(parents=True, exist_ok=True)
+    summary_path = Path("results") / "data_download_summary.json"
+    with open(summary_path, "w") as fh:
+        json.dump(
+            {
+                "timestamp": utc_now().isoformat(),
+                "symbols": list(results.keys()),
+                "timeframes": all_timeframes,
+                "files": results,
+            },
+            fh,
+            indent=2,
+        )
+    log.info("Download summary written to %s", summary_path)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Quantum Trading System")
     parser.add_argument(
         "--run-type",
-        choices=["training", "signal", "evaluate", "train-models", "infinity-train"],
+        choices=["training", "signal", "evaluate", "train-models", "infinity-train", "download-data"],
         required=True,
         help="What to run",
     )
@@ -1020,6 +1077,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return run_paper_signal(cfg_path)
     elif args.run_type == "evaluate":
         return run_evaluation(cfg_path)
+    elif args.run_type == "download-data":
+        return run_download_data(cfg_path)
     else:
         log.error("Unknown run type: %s", args.run_type)
         return 1

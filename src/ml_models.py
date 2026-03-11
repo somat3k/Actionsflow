@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
@@ -197,6 +197,9 @@ class QuantumEnsemble:
       - Neural Network (MLPClassifier) for sequential pattern recognition
         via temporal-window feature augmentation – no external framework
         required; uses scikit-learn's built-in MLPClassifier.
+      - ExtraTrees (ExtraTreesClassifier) – multiplex timeframe
+        tree-classifier-decision-making-system; combines randomised splits
+        across all timeframes to finalise the trading decision.
 
     Supports per-timeframe epoch training where each timeframe is trained
     separately, and a combined decision tree-flow merges predictions.
@@ -221,6 +224,9 @@ class QuantumEnsemble:
         # dashboard consumers.
         self.nn_model: Optional[MLPClassifier] = None
         self.linear_model: Optional[LogisticRegression] = None
+        # Tree-classifier-decision-making-system: ExtraTreesClassifier
+        # finalises the multiplex timeframe decision.
+        self.tree_clf: Optional[ExtraTreesClassifier] = None
 
         # Per-timeframe models for epoch training
         self._tf_models: Dict[str, Dict[str, Any]] = {}
@@ -293,12 +299,20 @@ class QuantumEnsemble:
         linear_model.fit(X_train_s, y_train)
         scores["linear"] = float(np.mean(linear_model.predict(X_val_s) == y_val))
 
+        # Tree-classifier-decision-making-system (ExtraTrees)
+        tree_clf = ExtraTreesClassifier(
+            n_estimators=200, max_depth=10, n_jobs=-1, random_state=42
+        )
+        tree_clf.fit(X_train_s, y_train)
+        scores["tree_clf"] = float(np.mean(tree_clf.predict(X_val_s) == y_val))
+
         self._tf_models[timeframe] = {
             "scaler": scaler,
             "feature_cols": feature_cols,
             "xgb": xgb_model if _XGB_AVAILABLE else None,
             "rf": rf_model,
             "linear": linear_model,
+            "tree_clf": tree_clf,
             "scores": scores,
         }
         log.info("Epoch %s@%s scores: %s", symbol, timeframe, scores)
@@ -325,15 +339,18 @@ class QuantumEnsemble:
             probas["rf"] = tf_data["rf"].predict_proba(X_s)
         if tf_data.get("linear") is not None:
             probas["linear"] = tf_data["linear"].predict_proba(X_s)
+        if tf_data.get("tree_clf") is not None:
+            probas["tree_clf"] = tf_data["tree_clf"].predict_proba(X_s)
 
         if not probas:
             return {"signal": 0, "confidence": 0.0, "timeframe": timeframe}
 
         model_weight_keys = {
-            "xgb": self._model_weights.get("xgb", 0.30),
-            "rf": self._model_weights.get("rf", 0.20),
-            "linear": self._model_weights.get("linear", 0.15),
-            "lstm": self._model_weights.get("lstm", 0.25),
+            "xgb": self._model_weights.get("xgb", 0.25),
+            "rf": self._model_weights.get("rf", 0.15),
+            "linear": self._model_weights.get("linear", 0.10),
+            "lstm": self._model_weights.get("lstm", 0.20),
+            "tree_clf": self._model_weights.get("tree_clf", 0.20),
         }
         w_sum = sum(model_weight_keys[k] for k in probas if k in model_weight_keys)
         if w_sum <= 0:
@@ -485,6 +502,17 @@ class QuantumEnsemble:
         self.rf_model.fit(X_train_s, y_train)
         scores["rf"] = float(np.mean(self.rf_model.predict(X_val_s) == y_val))
         log.info("RandomForest val acc: %.4f", scores["rf"])
+
+        # Tree-classifier-decision-making-system (ExtraTrees)
+        # Finalises multiplex timeframe decisions using highly randomised splits
+        # across all input features, providing diverse signal coverage.
+        log.info("Training ExtraTreesClassifier (tree-classifier-decision-making-system) …")
+        self.tree_clf = ExtraTreesClassifier(
+            n_estimators=200, max_depth=10, n_jobs=-1, random_state=42
+        )
+        self.tree_clf.fit(X_train_s, y_train)
+        scores["tree_clf"] = float(np.mean(self.tree_clf.predict(X_val_s) == y_val))
+        log.info("ExtraTreesClassifier val acc: %.4f", scores["tree_clf"])
 
         # Linear Classifier (LogisticRegression for classification)
         log.info("Training LinearClassifier …")
@@ -791,6 +819,8 @@ class QuantumEnsemble:
             probas["rf"] = self.rf_model.predict_proba(X_s)
         if self.linear_model is not None:
             probas["linear"] = self.linear_model.predict_proba(X_s)
+        if self.tree_clf is not None:
+            probas["tree_clf"] = self.tree_clf.predict_proba(X_s)
         if self.nn_model is not None:
             # Build temporal-augmented feature vector for inference.
             all_X = self.scaler.transform(
@@ -822,10 +852,10 @@ class QuantumEnsemble:
 
         # Weighted average of probabilities
         weights_sum = sum(
-            self._model_weights[k] for k in probas
+            self._model_weights.get(k, 0.10) for k in probas
         )
         weighted_proba = sum(
-            self._model_weights[k] / weights_sum * probas[k]
+            self._model_weights.get(k, 0.10) / weights_sum * probas[k]
             for k in probas
         )[0]  # shape (3,)
 
@@ -885,6 +915,8 @@ class QuantumEnsemble:
             joblib.dump(self.rf_model, prefix / "rf.pkl")
         if self.linear_model:
             joblib.dump(self.linear_model, prefix / "linear.pkl")
+        if self.tree_clf:
+            joblib.dump(self.tree_clf, prefix / "tree_clf.pkl")
         if self.nn_model:
             joblib.dump(self.nn_model, prefix / "nn.pkl")
         log.info("Models saved to %s", prefix)
@@ -925,6 +957,9 @@ class QuantumEnsemble:
         linear_path = prefix / "linear.pkl"
         if linear_path.exists():
             self.linear_model = joblib.load(linear_path)
+        tree_clf_path = prefix / "tree_clf.pkl"
+        if tree_clf_path.exists():
+            self.tree_clf = joblib.load(tree_clf_path)
         # Load neural network model (new .pkl format).
         # Silently skip the legacy TensorFlow lstm/ directory if present.
         nn_path = prefix / "nn.pkl"

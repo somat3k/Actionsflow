@@ -89,7 +89,7 @@ class DataConfig:
 
 
 _DEFAULT_MODEL_WEIGHTS: Dict[str, float] = {
-    "xgb": 0.30, "gb": 0.10, "rf": 0.20, "lstm": 0.25, "linear": 0.15,
+    "xgb": 0.25, "gb": 0.10, "rf": 0.15, "lstm": 0.20, "linear": 0.10, "tree_clf": 0.20,
 }
 
 
@@ -339,11 +339,11 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     # Load per-model weights from YAML if present.
     models_raw = ml_raw.get("models", {})
     default_weights = {
-        "xgb": 0.30, "gb": 0.10, "rf": 0.20, "lstm": 0.25, "linear": 0.15,
+        "xgb": 0.25, "gb": 0.10, "rf": 0.15, "lstm": 0.20, "linear": 0.10, "tree_clf": 0.20,
     }
     yaml_name_map = {
         "xgboost": "xgb", "gradient_boost": "gb", "random_forest": "rf",
-        "lstm": "lstm", "linear": "linear",
+        "lstm": "lstm", "linear": "linear", "extra_trees": "tree_clf",
     }
     model_weights = dict(default_weights)
     for yaml_name, internal_name in yaml_name_map.items():

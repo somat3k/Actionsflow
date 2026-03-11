@@ -61,11 +61,12 @@ class TestConfigDualGemini:
 class TestConfigModelWeights:
     def test_model_weights_loaded_from_yaml(self):
         cfg = load_config()
-        assert cfg.ml.model_weights["xgb"] == 0.30
+        assert cfg.ml.model_weights["xgb"] == 0.25
         assert cfg.ml.model_weights["gb"] == 0.10
-        assert cfg.ml.model_weights["rf"] == 0.20
-        assert cfg.ml.model_weights["lstm"] == 0.25
-        assert cfg.ml.model_weights["linear"] == 0.15
+        assert cfg.ml.model_weights["rf"] == 0.15
+        assert cfg.ml.model_weights["lstm"] == 0.20
+        assert cfg.ml.model_weights["linear"] == 0.10
+        assert cfg.ml.model_weights["tree_clf"] == 0.20
 
 
 # ── Gemini orchestrator tests ─────────────────────────────────────────────────

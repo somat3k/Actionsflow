@@ -8,9 +8,11 @@ Set TRADING_MODE=test to use synthetic data instead of live API calls.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -32,6 +34,23 @@ log = get_logger(__name__)
 # Maximum candles per single API request (Hyperliquid limit)
 _MAX_CANDLES_PER_REQUEST = 5000
 _REQUEST_TIMEOUT = 30  # seconds
+
+# ── Symbol registry (loaded once from JSON) ───────────────────────────────────
+_SYMBOLS_FILE = Path(__file__).resolve().parent.parent / "config" / "symbols.json"
+
+
+def _load_symbols_registry() -> List[Dict[str, Any]]:
+    """Load the full symbol list from config/symbols.json."""
+    try:
+        with open(_SYMBOLS_FILE) as fh:
+            data = json.load(fh)
+        return data.get("symbols", [])
+    except Exception as exc:
+        log.warning("Failed to load symbols.json (%s); using empty fallback", exc)
+        return []
+
+
+_SYMBOLS_REGISTRY: List[Dict[str, Any]] = _load_symbols_registry()
 
 
 class HyperliquidDataFetcher:
@@ -118,6 +137,44 @@ class HyperliquidDataFetcher:
         ]:
             frames[tf] = self.fetch_candles(symbol, tf)
         return frames
+
+    def save_ohlcv_csv(
+        self,
+        symbol: str,
+        interval: str,
+        lookback_candles: Optional[int] = None,
+    ) -> Path:
+        """Download fresh OHLCV data and save it to a CSV file in the configured
+        CSV directory (``data.historical_csv_dir``).
+
+        Returns the path to the saved file.  Suitable for daily scheduled runs
+        that seed training with the latest market data from the Hyperliquid API.
+        """
+        csv_dir = Path(self.cfg.data.historical_csv_dir)
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = csv_dir / f"{symbol}_{interval}.csv"
+
+        df = self.fetch_ohlcv_history(
+            symbol,
+            interval,
+            lookback_candles=lookback_candles or self.cfg.data.training_lookback_candles,
+            include_features=False,
+        )
+        if df.empty:
+            log.warning("No OHLCV data fetched for %s@%s – skipping CSV save", symbol, interval)
+            return csv_path
+
+        if csv_path.exists():
+            existing = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+            if not existing.empty:
+                combined = pd.concat([existing, df])
+                combined = combined[~combined.index.duplicated(keep="last")]
+                combined.sort_index(inplace=True)
+                df = combined
+
+        df.to_csv(csv_path)
+        log.info("Saved %d OHLCV rows → %s", len(df), csv_path)
+        return csv_path
 
     def fetch_order_book(self, symbol: str) -> Dict[str, Any]:
         """Fetch level-2 order book snapshot."""
@@ -312,19 +369,18 @@ class HyperliquidDataFetcher:
                 ]
             }
         if ptype == "metaAndAssetCtxs":
-            # Return entries for all common symbols so fetch_funding_rate works for any.
-            symbols = ["BTC", "ETH", "SOL", "ARB", "ZRO", "AAVE", "ADA", "CATI"]
-            prices = [40_000.0, 3_000.0, 100.0, 1.0, 4.2, 95.0, 0.55, 0.22]
-            universe = [{"name": s} for s in symbols]
+            # Return entries for all symbols from the registry so fetch_funding_rate
+            # works for any configured symbol in test/CI mode.
+            universe = [{"name": entry["name"]} for entry in _SYMBOLS_REGISTRY]
             contexts = [
                 {
                     "funding": "0.0001",
                     "openInterest": str(1_000.0),
-                    "markPx": str(px),
-                    "oraclePx": str(px),
-                    "midPx": str(px),
+                    "markPx": str(entry["synthetic_price"]),
+                    "oraclePx": str(entry["synthetic_price"]),
+                    "midPx": str(entry["synthetic_price"]),
                 }
-                for px in prices
+                for entry in _SYMBOLS_REGISTRY
             ]
             return [{"universe": universe}, contexts]
         if ptype == "recentTrades":

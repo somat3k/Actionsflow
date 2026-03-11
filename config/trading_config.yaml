@@ -184,7 +184,7 @@ ml:
   models:
     lstm:
       enabled: true
-      weight: 0.25
+      weight: 0.20
       # Neural Network (MLPClassifier) – replaces the TensorFlow LSTM.
       # Architecture: 512 → 256 → 128 → 64 hidden units, ReLU activation,
       # Adam optimiser, L2 regularisation (alpha=1e-4), early stopping.
@@ -198,7 +198,7 @@ ml:
 
     xgboost:
       enabled: true
-      weight: 0.30
+      weight: 0.25
       n_estimators: 500
       max_depth: 6
       learning_rate: 0.05
@@ -215,13 +215,23 @@ ml:
 
     random_forest:
       enabled: true
+      weight: 0.15
+      n_estimators: 200
+      max_depth: 10
+
+    extra_trees:
+      enabled: true
       weight: 0.20
+      # ExtraTreesClassifier – tree-classifier-decision-making-system.
+      # Combines highly randomised splits across all multiplex timeframes
+      # (1m, 5m, 15m, 1h, 1d) to finalise the trading decision with
+      # diverse feature coverage and low variance.
       n_estimators: 200
       max_depth: 10
 
     linear:
       enabled: true
-      weight: 0.15
+      weight: 0.10
       C: 1.0
       max_iter: 1000
 
@@ -279,7 +289,7 @@ ml:
     model_save_dir: "models"
     epochs: 200
     reinforcement_alpha: 0.15
-    retrain_interval_hours: 24        # Retrain every 24 hours
+    retrain_interval_hours: 6         # 4 training sessions/day (every 6 hours)
 
   # Infinity-loop supervised learning (leader as student)
   infinity_loop:
