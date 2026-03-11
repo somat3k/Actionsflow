@@ -140,6 +140,7 @@ Notes:
   as ISO-8601 with a trailing `Z`.
 - `market_snapshot` and `recent_trades` are optional. When omitted, the bridge defaults to
   zero microstructure values and empty performance metrics.
+- Each entry in `recent_trades` should include a `pnl` field to be counted in metrics.
 - `positions.long` / `positions.short` are counts of open positions for the symbol.
 - `initial_equity` is optional and lets you override the performance baseline used for metrics.
 - Set `reset_daily: true` to reset the risk manager daily tracking when you start a new session.

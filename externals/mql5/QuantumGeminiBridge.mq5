@@ -159,8 +159,15 @@ string FormatTimestamp(datetime value)
 string JsonEscape(string value)
 {
     string escaped = value;
+    string backspace = CharToString(8);
+    string formfeed = CharToString(12);
     StringReplace(escaped, "\\", "\\\\");
     StringReplace(escaped, "\"", "\\\"");
+    StringReplace(escaped, "\r", "\\r");
+    StringReplace(escaped, "\n", "\\n");
+    StringReplace(escaped, "\t", "\\t");
+    StringReplace(escaped, backspace, "\\b");
+    StringReplace(escaped, formfeed, "\\f");
     return escaped;
 }
 
