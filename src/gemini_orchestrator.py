@@ -2,12 +2,17 @@
 Quantum Trading System – Google Gemini AI Orchestrator
 Uses Gemini to analyse market context, validate ML signals, recommend leverage,
 review performance, and suggest trading strategy adjustments.
+
+Supports dual-model orchestration:
+  - gemini-2.0-flash (GEMINI_API_KEY): fast analysis for all symbols
+  - gemini-2.5-pro (GEMINI_API_KEY2): deep reasoning for performance review
 """
 
 from __future__ import annotations
 
 import json
 import textwrap
+import time
 import warnings
 from typing import Any, Dict, List, Optional
 
@@ -43,25 +48,66 @@ _SYSTEM_PROMPT = textwrap.dedent("""
 
 
 class GeminiOrchestrator:
-    """Interfaces with Google Gemini AI to orchestrate trading decisions."""
-    
+    """Interfaces with Google Gemini AI to orchestrate trading decisions.
+
+    Supports dual-model orchestration using two API keys:
+      - Primary (gemini-2.0-flash): fast market analysis and signal validation
+      - Secondary (gemini-2.5-pro): deep performance review and strategy tuning
+    """
+
     def __init__(self, config: AppConfig) -> None:
         self.cfg = config
         self.gcfg = config.gemini
         self._model = None
+        self._model_2 = None
+        self._api_key_1 = self.gcfg.api_key
+        self._api_key_2 = self.gcfg.api_key_2
+        self._last_answer_times: List[float] = []
+        self._max_answer_times = 500
+
         if _GENAI_AVAILABLE and self.gcfg.api_key:
             genai.configure(api_key=self.gcfg.api_key)
             self._model = genai.GenerativeModel(
                 model_name=self.gcfg.model,
                 system_instruction=_SYSTEM_PROMPT,
             )
-            log.info("Gemini model '%s' initialised", self.gcfg.model)
+            log.info("Gemini primary model '%s' initialised", self.gcfg.model)
+
+            if self.gcfg.api_key_2:
+                try:
+                    # Reconfigure with second API key for the secondary model.
+                    genai.configure(api_key=self.gcfg.api_key_2)
+                    self._model_2 = genai.GenerativeModel(
+                        model_name=self.gcfg.model_2,
+                        system_instruction=_SYSTEM_PROMPT,
+                    )
+                    log.info(
+                        "Gemini secondary model '%s' initialised",
+                        self.gcfg.model_2,
+                    )
+                    # Restore primary API key as the active configuration.
+                    genai.configure(api_key=self.gcfg.api_key)
+                except Exception as exc:
+                    log.warning(
+                        "Failed to initialise secondary Gemini model '%s': %s",
+                        self.gcfg.model_2,
+                        exc,
+                    )
+                    # Restore primary API key on failure.
+                    genai.configure(api_key=self.gcfg.api_key)
         else:
             log.warning(
                 "Gemini unavailable (api_key=%s, library=%s) – using fallback heuristics",
                 bool(self.gcfg.api_key),
                 _GENAI_AVAILABLE,
             )
+
+    @property
+    def avg_answer_time(self) -> float:
+        """Average Gemini response time in seconds."""
+        if not self._last_answer_times:
+            return 0.0
+        return sum(self._last_answer_times) / len(self._last_answer_times)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -135,6 +181,7 @@ class GeminiOrchestrator:
         metrics: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
+        Uses the secondary model (gemini-2.5-pro) for deep performance review.
         Return:
         {
             "adjustments": [{"parameter": str, "old_value": ..., "new_value": ..., "reason": str}],
@@ -143,11 +190,12 @@ class GeminiOrchestrator:
             "pause_reason": str,
         }
         """
-        if self._model is None:
+        model = self._model_2 or self._model
+        if model is None:
             return self._fallback_performance_review(metrics)
 
         prompt = self._build_performance_review_prompt(recent_trades, metrics)
-        response = self._call_gemini(prompt)
+        response = self._call_gemini(prompt, model=model)
         if response:
             try:
                 result = json.loads(self._extract_json(response))
@@ -160,6 +208,30 @@ class GeminiOrchestrator:
             except (json.JSONDecodeError, KeyError) as exc:
                 log.warning("Failed to parse Gemini performance review: %s", exc)
         return self._fallback_performance_review(metrics)
+
+    def build_short_message_payload(
+        self,
+        symbol: str,
+        signal: int,
+        confidence: float,
+        regime: str,
+        leverage: int,
+        price: float,
+    ) -> Dict[str, Any]:
+        """Build a compact trade signal payload suitable for messaging."""
+        signal_label = {0: "FLAT", 1: "LONG", 2: "SHORT"}.get(signal, "FLAT")
+        return {
+            "symbol": symbol,
+            "signal": signal_label,
+            "confidence": round(confidence, 4),
+            "regime": regime,
+            "leverage": leverage,
+            "price": round(price, 4),
+            "message": (
+                f"{symbol} {signal_label} | conf={confidence:.2%} | "
+                f"{regime} | {leverage}x @ {price:.2f}"
+            ),
+        }
 
     # ── Prompt builders ───────────────────────────────────────────────────────
 
@@ -262,30 +334,57 @@ class GeminiOrchestrator:
 
     # ── Gemini call ───────────────────────────────────────────────────────────
 
-    def _call_gemini(self, prompt: str) -> Optional[str]:
+    def _call_gemini(self, prompt: str, model: Any = None) -> Optional[str]:
+        active_model = model or self._model
+        # When using the secondary model, reconfigure with its API key.
+        use_secondary = (
+            model is not None
+            and model is self._model_2
+            and self._api_key_2
+            and _GENAI_AVAILABLE
+        )
+        if use_secondary:
+            genai.configure(api_key=self._api_key_2)
+
         def _generate() -> Optional[str]:
             gen_cfg = {
                 "temperature": self.gcfg.temperature,
                 "max_output_tokens": self.gcfg.max_output_tokens,
             }
-            response = self._model.generate_content(
+            response = active_model.generate_content(
                 prompt,
                 generation_config=gen_cfg,
             )
             return response.text
 
+        start = time.monotonic()
         try:
-            return _generate()
+            result = _generate()
+            self._record_answer_time(time.monotonic() - start)
+            return result
         except Exception as exc:
-            failed_model = self.gcfg.model
+            failed_model = getattr(active_model, "model_name", self.gcfg.model)
             if self._is_model_not_found_error(exc) and self._switch_to_supported_model(failed_model):
                 try:
-                    return _generate()
+                    active_model = self._model
+                    result = _generate()
+                    self._record_answer_time(time.monotonic() - start)
+                    return result
                 except Exception as retry_exc:
                     log.error("Gemini API call failed after model switch: %s", retry_exc)
                     return None
             log.error("Gemini API call failed: %s", exc)
             return None
+        finally:
+            # Restore primary API key after secondary model calls.
+            if use_secondary and _GENAI_AVAILABLE:
+                genai.configure(api_key=self._api_key_1)
+
+    def _record_answer_time(self, elapsed: float) -> None:
+        """Append response time and keep only the last N samples."""
+        self._last_answer_times.append(elapsed)
+        if len(self._last_answer_times) > self._max_answer_times:
+            self._last_answer_times = self._last_answer_times[-self._max_answer_times:]
 
     @staticmethod
     def _is_model_not_found_error(exc: Exception) -> bool:

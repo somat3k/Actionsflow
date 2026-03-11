@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -70,9 +70,11 @@ class TradingConfig:
 class DataConfig:
     hyperliquid_api_url: str = "https://api.hyperliquid.xyz/info"
     hyperliquid_ws_url: str = "wss://api.hyperliquid.xyz/ws"
-    primary_interval: str = "15m"
-    secondary_interval: str = "1h"
-    macro_interval: str = "4h"
+    primary_interval: str = "1m"
+    secondary_interval: str = "5m"
+    macro_interval: str = "15m"
+    hourly_interval: str = "1h"
+    daily_interval: str = "1d"
     lookback_candles: int = 500
     training_lookback_candles: int = 2000
     dataset_dir: str = "datasets"
@@ -94,7 +96,9 @@ class MLConfig:
 @dataclass
 class GeminiConfig:
     api_key: str = ""
-    model: str = "gemini-1.5-pro"
+    api_key_2: str = ""
+    model: str = "gemini-2.0-flash"
+    model_2: str = "gemini-2.5-pro"
     temperature: float = 0.1
     max_output_tokens: int = 2048
 
@@ -263,9 +267,11 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             data_raw.get("hyperliquid_api_url", "https://api.hyperliquid.xyz/info"),
         ),
         hyperliquid_ws_url=data_raw.get("hyperliquid_ws_url", "wss://api.hyperliquid.xyz/ws"),
-        primary_interval=os.environ.get("PRIMARY_INTERVAL", intervals.get("primary", "15m")),
-        secondary_interval=os.environ.get("SECONDARY_INTERVAL", intervals.get("secondary", "1h")),
-        macro_interval=os.environ.get("MACRO_INTERVAL", intervals.get("macro", "4h")),
+        primary_interval=os.environ.get("PRIMARY_INTERVAL", intervals.get("primary", "1m")),
+        secondary_interval=os.environ.get("SECONDARY_INTERVAL", intervals.get("secondary", "5m")),
+        macro_interval=os.environ.get("MACRO_INTERVAL", intervals.get("macro", "15m")),
+        hourly_interval=os.environ.get("HOURLY_INTERVAL", intervals.get("hourly", "1h")),
+        daily_interval=os.environ.get("DAILY_INTERVAL", intervals.get("daily", "1d")),
         lookback_candles=int(lookback.get("candles", 500)),
         training_lookback_candles=training_lookback,
         dataset_dir=os.environ.get("DATASET_DIR", dataset_raw.get("dir", "datasets")),
@@ -275,6 +281,20 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     # ── ML ────────────────────────────────────────────────────
     signals = ml_raw.get("signals", {})
     training = ml_raw.get("training", {})
+    # Load per-model weights from YAML if present.
+    models_raw = ml_raw.get("models", {})
+    default_weights = {
+        "xgb": 0.30, "gb": 0.10, "rf": 0.20, "lstm": 0.25, "linear": 0.15,
+    }
+    yaml_name_map = {
+        "xgboost": "xgb", "gradient_boost": "gb", "random_forest": "rf",
+        "lstm": "lstm", "linear": "linear",
+    }
+    model_weights = dict(default_weights)
+    for yaml_name, internal_name in yaml_name_map.items():
+        model_cfg = models_raw.get(yaml_name, {})
+        if "weight" in model_cfg:
+            model_weights[internal_name] = float(model_cfg["weight"])
     ml = MLConfig(
         long_threshold=float(signals.get("long_threshold", 0.60)),
         short_threshold=float(signals.get("short_threshold", 0.60)),
@@ -291,7 +311,9 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     # ── Gemini ────────────────────────────────────────────────
     gemini = GeminiConfig(
         api_key=os.environ.get("GEMINI_API_KEY", ""),
-        model=gemini_raw.get("model", "gemini-1.5-pro"),
+        api_key_2=os.environ.get("GEMINI_API_KEY2", ""),
+        model=gemini_raw.get("model", "gemini-2.0-flash"),
+        model_2=gemini_raw.get("model_2", "gemini-2.5-pro"),
         temperature=float(gemini_raw.get("temperature", 0.1)),
         max_output_tokens=int(gemini_raw.get("max_output_tokens", 2048)),
     )

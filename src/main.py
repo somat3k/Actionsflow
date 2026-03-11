@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from dataclasses import asdict
 from pathlib import Path
@@ -31,6 +32,7 @@ from src.dataset_manager import DatasetManager
 from src.live_trader import LiveTrader
 from src.paper_broker import PaperBroker
 from src.risk_manager import PositionRequest, RiskManager
+from src.supervised_learning import SupervisedLearningModule
 from src.utils import fmt_pct, fmt_usd, get_logger, utc_now
 
 log = get_logger(__name__)
@@ -204,22 +206,12 @@ def run_training(config_path: Optional[Path] = None) -> int:
     with open(output_path, "w") as fh:
         json.dump(results, fh, indent=2)
 
-    if epoch_scores:
-        epoch_path = Path(cfg.system.results_dir) / "training_epoch_scores.json"
-        with open(epoch_path, "w") as fh:
-            json.dump(epoch_scores, fh, indent=2)
-
-    summary = (
-        "## 🤖 Model Training Results\n\n"
-        f"- **Epochs:** {training_epochs}\n"
-        f"- **Reinforcement Alpha:** {reinforcement_alpha:.2f}\n\n"
-        "| Symbol | XGB | GB | RF | LSTM |\n|---|---|---|---|---|\n"
-    )
+    summary = "## 🤖 Model Training Results\n\n| Symbol | XGB | GB | RF | Linear | LSTM |\n|---|---|---|---|---|---|\n"
     for sym, scores in results.items():
         def _fmt(key: str) -> str:
             v = scores.get(key)
             return f"{v:.4f}" if isinstance(v, float) else "N/A"
-        row = f"| {sym} | {_fmt('xgb')} | {_fmt('gb')} | {_fmt('rf')} | {_fmt('lstm')} |\n"
+        row = f"| {sym} | {_fmt('xgb')} | {_fmt('gb')} | {_fmt('rf')} | {_fmt('linear')} | {_fmt('lstm')} |\n"
         summary += row
     _print_github_summary(summary)
     db.set_cache("training:last_scores", results)
@@ -251,19 +243,24 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
     ensemble = QuantumEnsemble(cfg)
     ai_orchestrator = MultiAIOrchestrator(cfg)
     risk_mgr = RiskManager(cfg)
+    supervised = SupervisedLearningModule(cfg)
     state_dir = Path(cfg.system.state_dir)
 
     # Load broker state
     broker = PaperBroker(cfg)
     broker_state_path = state_dir / "paper_broker.json"
     broker.load(broker_state_path)
+    supervised.load_state(state_dir / "supervised_learning.json")
 
     actions_taken: List[Dict] = []
+    action_times: List[float] = []
+    signal_payloads: List[Dict] = []
 
     for market in cfg.trading.markets:
         if not market.enabled:
             continue
         symbol = market.symbol
+        action_start = time.monotonic()
 
         if not _ensure_model_ready(cfg, db, fetcher, ensemble, symbol):
             log.warning("No model for %s – skipping", symbol)
@@ -312,6 +309,14 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
             ml_signal["confidence"],
             lev_rec.get("recommended_leverage"),
         )
+
+        # Build short message payload
+        payload = gemini.build_short_message_payload(
+            symbol, validated_signal, ml_signal["confidence"],
+            regime, final_leverage, current_price,
+        )
+        signal_payloads.append(payload)
+        log.info("Signal payload: %s", payload["message"])
 
         # Update positions (apply stops)
         funding_rate = snapshot.get("funding", {}).get("funding_rate", 0.0)
@@ -366,11 +371,24 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
                 {"action": "close", "symbol": symbol, "price": current_price}
             )
 
+        action_times.append(time.monotonic() - action_start)
+
+    # Live-supervised learning evaluation
+    all_history = [asdict(t) for t in broker.trade_history]
+    if len(all_history) >= 10:
+        sup_metrics = compute_metrics(
+            all_history, cfg.paper_broker.initial_equity, broker.equity
+        )
+        supervised.evaluate_and_adjust(all_history, asdict(sup_metrics))
+    supervised.save_state(state_dir / "supervised_learning.json")
+
     # Persist broker state
     broker.save(broker_state_path)
 
     equity = broker.get_equity()
     total_ret = (equity - cfg.paper_broker.initial_equity) / cfg.paper_broker.initial_equity
+    avg_action_time = sum(action_times) / len(action_times) if action_times else 0.0
+    avg_gemini_time = gemini.avg_answer_time
     summary = (
         f"## 📊 Paper Trading Cycle – {utc_now().strftime('%Y-%m-%d %H:%M UTC')}\n\n"
         f"- **Equity:** {fmt_usd(equity)}\n"
@@ -378,6 +396,8 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         f"- **Open Positions:** {len(broker.positions)}\n"
         f"- **Total Trades:** {len(broker.trade_history)}\n"
         f"- **Actions This Cycle:** {len(actions_taken)}\n"
+        f"- **Avg Action Time:** {avg_action_time:.2f}s\n"
+        f"- **Avg Gemini Time:** {avg_gemini_time:.2f}s\n"
     )
     _print_github_summary(summary)
     db.set_cache(
@@ -387,6 +407,10 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
             "total_return": total_ret,
             "actions": len(actions_taken),
             "trades": len(broker.trade_history),
+            "num_positions": len(broker.positions),
+            "avg_action_time_s": avg_action_time,
+            "avg_gemini_time_s": avg_gemini_time,
+            "signal_payloads": signal_payloads,
         },
     )
     db.record_task_completion(
@@ -545,10 +569,22 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
 
     evaluator = Evaluator(cfg)
     trade_history = [asdict(t) for t in broker.trade_history]
+
+    # Retrieve cached timing metrics from the last signal cycle.
+    last_cycle = db.get_cache("signal:paper:last_cycle")
+    cached_gemini_time = 0.0
+    cached_action_time = 0.0
+    if isinstance(last_cycle, dict):
+        cached_gemini_time = float(last_cycle.get("avg_gemini_time_s", 0.0))
+        cached_action_time = float(last_cycle.get("avg_action_time_s", 0.0))
+
     metrics, adjustments = evaluator.evaluate(
         trade_history,
         initial_equity=cfg.paper_broker.initial_equity,
         final_equity=broker.equity,
+        num_positions=len(broker.positions),
+        gemini_answer_time_avg_s=cached_gemini_time,
+        action_time_avg_s=cached_action_time,
     )
 
     evaluator.print_report(metrics, adjustments)
@@ -577,9 +613,15 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
         f"| Sharpe Ratio | {metrics.sharpe_ratio:.3f} |\n"
         f"| Max Drawdown | {fmt_pct(metrics.max_drawdown_pct)} |\n"
         f"| Win Rate | {fmt_pct(metrics.win_rate)} |\n"
+        f"| Accuracy | {fmt_pct(metrics.accuracy)} |\n"
+        f"| Equity Growth | {fmt_pct(metrics.equity_growth_pct)} |\n"
         f"| Profit Factor | {metrics.profit_factor:.3f} |\n"
         f"| Total Trades | {metrics.total_trades} |\n"
-        f"| Avg Leverage | {metrics.avg_leverage_used:.1f}x |\n\n"
+        f"| Num Positions | {metrics.num_positions} |\n"
+        f"| Avg Trade Length | {metrics.avg_trade_duration_hours:.2f}h |\n"
+        f"| Avg Leverage | {metrics.avg_leverage_used:.1f}x |\n"
+        f"| Gemini Avg Time | {metrics.gemini_answer_time_avg_s:.2f}s |\n"
+        f"| Action Avg Time | {metrics.action_time_avg_s:.2f}s |\n\n"
         f"**Threshold Check:** {'✅ PASS' if passes else '❌ FAIL'}\n"
     )
     if adjustments:
