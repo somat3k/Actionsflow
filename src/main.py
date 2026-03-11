@@ -570,7 +570,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
 
 def run_paper_signal(config_path: Optional[Path] = None) -> int:
     """Run one signal evaluation cycle in paper-trading mode."""
-    from src.ml_models import QuantumEnsemble
+    from src.ml_models import QuantumEnsemble, ModelDelegationAgent
 
     cfg = load_config(config_path)
     db = _build_db_manager(cfg)
@@ -579,6 +579,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
 
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
+    delegation_agent = ModelDelegationAgent(ensemble)
     ai_orchestrator = MultiAIOrchestrator(cfg)
     gemini = ai_orchestrator._fallback  # GeminiOrchestrator for short-message payloads
     risk_mgr = RiskManager(cfg)
@@ -590,6 +591,14 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
     broker_state_path = state_dir / "paper_broker.json"
     broker.load(broker_state_path)
     supervised.load_state(state_dir / "supervised_learning.json")
+
+    # Load cached regimes from the previous signal cycle so the delegation
+    # agent can immediately route to the correct model (regime is updated
+    # after each AI analysis below).
+    cached_regimes: Dict[str, str] = {}
+    regime_cache = db.get_cache("signal:paper:regimes")
+    if isinstance(regime_cache, dict):
+        cached_regimes = regime_cache
 
     actions_taken: List[Dict] = []
     action_times: List[float] = []
@@ -615,14 +624,16 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         current_price = float(df["close"].iloc[-1])
         atr = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns else current_price * 0.01
 
-        # ML signal
-        ml_signal = ensemble.predict(df)
+        # ML signal via delegation agent (uses cached regime from last cycle)
+        prior_regime = cached_regimes.get(symbol, "unknown")
+        ml_signal = delegation_agent.predict(df, regime=prior_regime)
         log.info(
-            "%s ML signal: %s (conf=%.3f, agree=%.2f)",
+            "%s ML signal: %s (conf=%.3f, agree=%.2f, delegated_to=%s)",
             symbol,
             {0: "FLAT", 1: "LONG", 2: "SHORT"}[ml_signal["signal"]],
             ml_signal["confidence"],
             ml_signal["agreement"],
+            ml_signal.get("delegated_to", "ensemble"),
         )
 
         # Gemini validation
@@ -630,6 +641,8 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         gemini_analysis = ai_orchestrator.analyse_market_context(symbol, ml_signal, snapshot)
         validated_signal = gemini_analysis.get("validated_signal", ml_signal["signal"])
         regime = gemini_analysis.get("regime", "unknown")
+        # Update cached regime for next cycle
+        cached_regimes[symbol] = regime
 
         # Leverage adjustment
         recent_history = [asdict(t) for t in broker.trade_history[-20:]]
@@ -752,6 +765,8 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
             "signal_payloads": signal_payloads,
         },
     )
+    # Persist updated regimes for the next signal cycle's delegation agent
+    db.set_cache("signal:paper:regimes", cached_regimes)
     db.record_task_completion(
         task_name="paper_signal_cycle",
         run_type="signal",
@@ -765,7 +780,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
 
 def run_live_signal(config_path: Optional[Path] = None) -> int:
     """Run one signal evaluation cycle in live-trading mode."""
-    from src.ml_models import QuantumEnsemble
+    from src.ml_models import QuantumEnsemble, ModelDelegationAgent
 
     cfg = load_config(config_path)
     db = _build_db_manager(cfg)
@@ -779,9 +794,16 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
 
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
+    delegation_agent = ModelDelegationAgent(ensemble)
     ai_orchestrator = MultiAIOrchestrator(cfg)
     risk_mgr = RiskManager(cfg)
     live_trader = LiveTrader(cfg, private_key=private_key)
+
+    # Load cached regimes for model delegation
+    cached_regimes: Dict[str, str] = {}
+    regime_cache = db.get_cache("signal:live:regimes")
+    if isinstance(regime_cache, dict):
+        cached_regimes = regime_cache
 
     state_dir = Path(cfg.system.state_dir)
     trade_log_path = state_dir / "live_trades.json"
@@ -807,10 +829,12 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
         current_price = float(df["close"].iloc[-1])
         atr = float(df.get("atr_14", df["close"] * 0.01).iloc[-1])
 
-        ml_signal = ensemble.predict(df)
+        prior_regime = cached_regimes.get(symbol, "unknown")
+        ml_signal = delegation_agent.predict(df, regime=prior_regime)
         gemini_analysis = ai_orchestrator.analyse_market_context(symbol, ml_signal, snapshot)
         validated_signal = gemini_analysis.get("validated_signal", ml_signal["signal"])
         regime = gemini_analysis.get("regime", "unknown")
+        cached_regimes[symbol] = regime
 
         # Check risk flags from Gemini
         risk_flags = gemini_analysis.get("risk_flags", [])
@@ -885,6 +909,8 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
         "signal:live:last_cycle",
         {"open_positions": n_open, "trade_log_size": len(trade_log)},
     )
+    # Persist updated regimes for the next signal cycle's delegation agent
+    db.set_cache("signal:live:regimes", cached_regimes)
     db.record_task_completion(
         task_name="live_signal_cycle",
         run_type="signal",
@@ -982,83 +1008,87 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
     return 0
 
 
-def run_download_data(config_path: Optional[Path] = None) -> int:
-    """Download fresh OHLCV data from Hyperliquid for all enabled symbols and
-    all configured timeframes, saving each as a CSV file.
+def run_model_export(config_path: Optional[Path] = None) -> int:
+    """Export trained sklearn models (GB, RF, Linear) to ONNX format and
+    save per-symbol OHLCV training data as CSV files.
 
-    Respects the TRAINING_SYMBOLS env var to scope the download to a subset of
-    symbols (same filter used by training runs).  A rate-limit delay is applied
-    between requests.  Returns a non-zero exit code when all downloads fail.
+    Scheduled daily at 12:00 UTC – the midpoint of the 24-hour training
+    window that starts at 00:00 UTC – so model redeployment never overlaps
+    with active model training.
     """
+    from src.ml_models import QuantumEnsemble
+
     cfg = load_config(config_path)
+    db = _build_db_manager(cfg)
+    log.setLevel(cfg.system.log_level)
+    log.info("=== MODEL EXPORT ===")
+
     fetcher = HyperliquidDataFetcher(cfg)
+    ensemble = QuantumEnsemble(cfg)
+    enabled_markets = [m for m in cfg.trading.markets if m.enabled]
 
-    # Re-use the same symbol filter as training runs.
-    markets = _resolve_training_markets(cfg)
-    enabled_markets = [m for m in markets if m.enabled]
-    all_timeframes = [
-        cfg.data.primary_interval,
-        cfg.data.secondary_interval,
-        cfg.data.macro_interval,
-        cfg.data.hourly_interval,
-        cfg.data.daily_interval,
-    ]
-    rate_delay = cfg.data.rate_limit_delay_s
+    csv_dir = Path(cfg.data.historical_csv_dir)
+    csv_dir.mkdir(parents=True, exist_ok=True)
 
-    log.info(
-        "=== DATA DOWNLOAD | %d symbols × %d timeframes ===",
-        len(enabled_markets),
-        len(all_timeframes),
-    )
+    export_results: Dict[str, Any] = {}
+    csv_results: Dict[str, str] = {}
 
-    results: Dict[str, Any] = {}
-    failures = 0
-    total = 0
     for market in enabled_markets:
         symbol = market.symbol
-        results[symbol] = {}
-        for tf in all_timeframes:
-            total += 1
-            try:
-                csv_path = fetcher.save_ohlcv_csv(symbol, tf)
-                results[symbol][tf] = str(csv_path)
-                log.info("Downloaded %s@%s → %s", symbol, tf, csv_path)
-            except Exception as exc:
-                log.warning("Failed to download %s@%s: %s", symbol, tf, exc)
-                results[symbol][tf] = None
-                failures += 1
-            if rate_delay > 0:
-                time.sleep(rate_delay)
+        loaded = ensemble.load(symbol)
+        if not loaded:
+            log.warning("No trained model for %s – skipping export", symbol)
+            continue
 
-    results_dir = Path(cfg.system.results_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = results_dir / "data_download_summary.json"
-    with open(summary_path, "w") as fh:
-        json.dump(
-            {
-                "timestamp": utc_now().isoformat(),
-                "symbols": list(results.keys()),
-                "timeframes": all_timeframes,
-                "files": results,
-                "failures": failures,
-                "total": total,
-            },
-            fh,
-            indent=2,
+        # Export GB, RF, Linear models to ONNX
+        onnx_paths = ensemble.export_onnx(symbol)
+        export_results[symbol] = onnx_paths
+
+        # Save OHLCV data as CSV for evaluation / hyperparameter tuning
+        df = fetcher.fetch_candles(
+            symbol,
+            cfg.data.primary_interval,
+            lookback_candles=cfg.data.lookback_candles,
         )
-    log.info("Download summary written to %s", summary_path)
+        if not df.empty:
+            csv_path = csv_dir / f"{symbol}_ohlcv.csv"
+            df.to_csv(csv_path, index=False)
+            csv_results[symbol] = str(csv_path)
+            log.info("Saved OHLCV CSV for %s → %s", symbol, csv_path)
 
-    if failures > 0:
-        log.warning("%d / %d download(s) failed", failures, total)
-    # Return non-zero only when every single download failed (total > 0).
-    return 1 if total > 0 and failures == total else 0
+    total_exported = sum(len(v) for v in export_results.values())
+    summary = (
+        f"## 🚀 Model Export – {utc_now().strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+        f"| Symbol | ONNX Models Exported | CSV Saved |\n|---|---|---|\n"
+    )
+    for sym in [m.symbol for m in enabled_markets if m.symbol in export_results]:
+        onnx_names = ", ".join(export_results[sym].keys()) or "none"
+        csv_saved = "✅" if sym in csv_results else "❌"
+        summary += f"| {sym} | {onnx_names} | {csv_saved} |\n"
+    summary += f"\n**Total ONNX models exported:** {total_exported}\n"
+    _print_github_summary(summary)
+
+    db.set_cache("model_export:last_results", {
+        "timestamp": utc_now().isoformat(),
+        "onnx_exported": {sym: list(v.keys()) for sym, v in export_results.items()},
+        "csv_saved": list(csv_results.keys()),
+    })
+    db.record_task_completion(
+        task_name="model_export",
+        run_type="export-models",
+        mode=cfg.trading.mode,
+        status="success",
+        metadata={"total_onnx": total_exported, "csv_symbols": list(csv_results.keys())},
+    )
+    return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Quantum Trading System")
     parser.add_argument(
         "--run-type",
-        choices=["training", "signal", "evaluate", "train-models", "infinity-train", "download-data"],
+        choices=["training", "signal", "evaluate", "train-models", "infinity-train",
+                 "export-models"],
         required=True,
         help="What to run",
     )
@@ -1092,8 +1122,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return run_paper_signal(cfg_path)
     elif args.run_type == "evaluate":
         return run_evaluation(cfg_path)
-    elif args.run_type == "download-data":
-        return run_download_data(cfg_path)
+    elif args.run_type == "export-models":
+        return run_model_export(cfg_path)
     else:
         log.error("Unknown run type: %s", args.run_type)
         return 1

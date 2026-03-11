@@ -10,6 +10,11 @@ tqdm>=4.65
 # Install separately if needed:
 # tensorflow>=2.14,<3.0   # or tensorflow-cpu
 
+# ── ONNX model export (optional – export-models run-type) ─────────────────────
+# Install separately if needed:
+# skl2onnx>=1.16,<2.0
+# onnxruntime>=1.17,<2.0
+
 # ── Dataset caching (optional) ────────────────────────────────────────────────
 # safetensors>=0.4.2,<1.0
 
