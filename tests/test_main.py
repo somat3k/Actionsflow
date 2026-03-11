@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 
 from src.config import load_config
 from src.database_manager import DatabaseManager
-from src.main import _get_hyperliquid_private_key, run_paper_signal
+from src.main import _get_hyperliquid_private_key, _resolve_trading_eligibility, main, run_paper_signal
 from src.utils import utc_now
 
 TEST_RETRAIN_BUFFER_HOURS = 1
@@ -113,3 +114,42 @@ def test_signal_skips_retrain_when_recent(test_env, monkeypatch):
     assert not any(
         inst.train_calls for inst in DummyEnsemble.instances
     ), "Expected no retraining when cache is recent"
+
+
+def test_full_cycle_run_type_invokes_handler(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADING_MODE", "test")
+    monkeypatch.setenv("LOG_LEVEL", "WARNING")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "results").mkdir()
+    (tmp_path / ".trading_state").mkdir()
+
+    with patch("src.main.run_full_cycle", return_value=0) as mock_cycle:
+        assert main(["--run-type", "full-cycle", "--mode", "test"]) == 0
+    mock_cycle.assert_called_once()
+
+
+def test_resolve_trading_eligibility_uses_cache(tmp_path, monkeypatch):
+    monkeypatch.delenv("TRADING_ELIGIBILITY_OVERRIDE", raising=False)
+    cfg = load_config()
+    db_path = tmp_path / cfg.system.state_dir / cfg.system.database_file
+    db = DatabaseManager(db_path)
+    db.set_cache(
+        "evaluation:last_metrics",
+        {"pass": True, "pause_trading": False, "pause_reason": ""},
+    )
+
+    allowed, reason = _resolve_trading_eligibility(db)
+    assert allowed
+    assert "passed" in reason.lower()
+
+
+def test_resolve_trading_eligibility_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADING_ELIGIBILITY_OVERRIDE", "true")
+    cfg = load_config()
+    db_path = tmp_path / cfg.system.state_dir / cfg.system.database_file
+    db = DatabaseManager(db_path)
+
+    allowed, reason = _resolve_trading_eligibility(db)
+    assert allowed
+    assert "override" in reason.lower()

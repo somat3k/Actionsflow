@@ -172,6 +172,14 @@ python -m src.main --run-type signal --mode paper
 
 # Evaluate performance
 python -m src.main --run-type evaluate --mode paper
+
+# Full pipeline run (training → signal → evaluate → export → eligibility → trading)
+python -m src.main --run-type full-cycle --mode paper
+
+# Optional overrides
+# DATA_SNAPSHOT_END_MS=...            # Freeze data snapshot across the full cycle
+# TRADING_ELIGIBILITY_OVERRIDE=true   # Force trading step even if evaluation fails
+# FORCE_LIVE_TRADING=true             # Allow live trades when TRADING_MODE=live
 ```
 
 ### Streamlit Dashboard
