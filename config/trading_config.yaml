@@ -117,12 +117,16 @@ ml:
     lstm:
       enabled: true
       weight: 0.25
-      sequence_length: 60
-      units: [128, 64, 32]
-      dropout: 0.2
-      epochs: 100
-      batch_size: 32
-      learning_rate: 0.001
+      # Neural Network (MLPClassifier) – replaces the TensorFlow LSTM.
+      # Architecture: 512 → 256 → 128 → 64 hidden units, ReLU activation,
+      # Adam optimiser, L2 regularisation (alpha=1e-4), early stopping.
+      # Temporal context is injected via a 10-step rolling feature window
+      # (mean, std, delta) – no external deep-learning framework required.
+      window: 10
+      hidden_layers: [512, 256, 128, 64]
+      alpha: 1e-4
+      max_iter: 500
+      early_stopping_patience: 15
 
     xgboost:
       enabled: true
@@ -205,7 +209,7 @@ ml:
     test_split: 0.15
     early_stopping_patience: 15
     model_save_dir: "models"
-    epochs: 3
+    epochs: 200
     reinforcement_alpha: 0.15
     retrain_interval_hours: 24        # Retrain every 24 hours
 

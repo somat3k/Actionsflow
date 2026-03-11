@@ -23,6 +23,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+try:
+    from tqdm import tqdm as _tqdm
+
+    def _progress(iterable, **kwargs):
+        return _tqdm(iterable, ascii=True, dynamic_ncols=False, **kwargs)
+
+except ImportError:  # pragma: no cover
+    def _progress(iterable, **kwargs):
+        return iterable
+
 from src.config import AppConfig, MarketConfig, load_config
 from src.data_fetcher import HyperliquidDataFetcher
 from src.database_manager import DatabaseManager
@@ -153,65 +163,124 @@ def _ensure_model_ready(
 
 
 def run_training(config_path: Optional[Path] = None) -> int:
-    """Train ML models on historical Hyperliquid data."""
+    """Train ML models on historical Hyperliquid data.
+
+    Implements the 200-epoch harmonogram:
+    - Fetches OHLCV data for all five timeframes (1m, 5m, 15m, 1h, 1d).
+    - Runs ``training_epochs`` (default 200) progressive epochs per symbol.
+    - Applies reinforcement-learning weight updates after each epoch.
+    - Displays tqdm progress bars for the training session, each symbol,
+      and each epoch's timeframe loop.
+    """
     from src.ml_models import QuantumEnsemble
 
     cfg = load_config(config_path)
     db = _build_db_manager(cfg)
     log.setLevel(cfg.system.log_level)
-    log.info("=== TRAINING MODE ===")
 
-    fetcher = HyperliquidDataFetcher(cfg)
-    ensemble = QuantumEnsemble(cfg)
-    dataset_mgr = DatasetManager(cfg, db)
     training_epochs = max(1, cfg.ml.training_epochs)
     reinforcement_alpha = cfg.ml.reinforcement_alpha
     force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
 
+    enabled_markets = [
+        m for m in _resolve_training_markets(cfg) if m.enabled
+    ]
+
+    log.info(
+        "=== TRAINING SESSION | %d epochs | %d symbols ===",
+        training_epochs, len(enabled_markets),
+    )
+
+    fetcher = HyperliquidDataFetcher(cfg)
+    ensemble = QuantumEnsemble(cfg)
+    dataset_mgr = DatasetManager(cfg, db)
+
+    # All configured timeframes for multi-timeframe training.
+    all_timeframes = [
+        cfg.data.primary_interval,
+        cfg.data.secondary_interval,
+        cfg.data.macro_interval,
+        cfg.data.hourly_interval,
+        cfg.data.daily_interval,
+    ]
+
     results: Dict[str, Any] = {}
     epoch_scores: Dict[str, Any] = {}
-    for market in _resolve_training_markets(cfg):
-        if not market.enabled:
-            continue
+
+    # ── Session-level progress bar (symbols) ──────────────────────────────
+    session_bar = _progress(
+        enabled_markets,
+        desc="Training session",
+        total=len(enabled_markets),
+        unit="symbol",
+        leave=True,
+    )
+    for market in session_bar:
         symbol = market.symbol
-        log.info("Fetching training data for %s …", symbol)
-        df = dataset_mgr.get_or_fetch_dataset(
-            fetcher,
-            symbol,
-            cfg.data.primary_interval,
-            lookback_candles=cfg.data.training_lookback_candles,
-            force_refresh=force_retrain,
-        )
-        if df.empty:
-            log.warning("No data for %s – skipping training", symbol)
+        if hasattr(session_bar, "set_postfix"):
+            session_bar.set_postfix(symbol=symbol)
+        log.info("── Symbol: %s ──", symbol)
+
+        # ── Fetch multi-timeframe training data ───────────────────────────
+        tf_dataframes: Dict[str, Any] = {}
+        for tf in all_timeframes:
+            log.info("  Fetching %s@%s …", symbol, tf)
+            df_tf = dataset_mgr.get_or_fetch_dataset(
+                fetcher,
+                symbol,
+                tf,
+                lookback_candles=cfg.data.training_lookback_candles,
+                force_refresh=force_retrain,
+            )
+            if not df_tf.empty:
+                tf_dataframes[tf] = df_tf
+
+        if not tf_dataframes:
+            log.warning("No data for any timeframe of %s – skipping", symbol)
             continue
 
+        primary_df = tf_dataframes.get(cfg.data.primary_interval)
+        if primary_df is None or primary_df.empty:
+            primary_df = next(iter(tf_dataframes.values()))
+
+        # ── Train ─────────────────────────────────────────────────────────
         if training_epochs > 1:
-            epochs = ensemble.train_with_progression(
-                df,
+            mtf_results = ensemble.train_multi_timeframe_with_progression(
+                tf_dataframes,
                 symbol=symbol,
                 epochs=training_epochs,
                 reinforcement_alpha=reinforcement_alpha,
+                primary_tf=cfg.data.primary_interval,
             )
-            if not epochs:
+            if not mtf_results:
                 continue
-            epoch_scores[symbol] = epochs
-            results[symbol] = epochs[-1]["scores"]
+            epoch_scores[symbol] = mtf_results
+            results[symbol] = mtf_results[-1]["combined_scores"]
         else:
-            scores = ensemble.train(df, symbol=symbol)
+            scores = ensemble.train(primary_df, symbol=symbol)
             results[symbol] = scores
 
+    # ── Persist results ───────────────────────────────────────────────────
     output_path = Path(cfg.system.results_dir) / "training_scores.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as fh:
         json.dump(results, fh, indent=2)
 
-    summary = "## 🤖 Model Training Results\n\n| Symbol | XGB | GB | RF | Linear | LSTM |\n|---|---|---|---|---|---|\n"
+    summary = (
+        "## 🤖 Model Training Results\n\n"
+        f"**Epochs:** {training_epochs} | "
+        f"**Timeframes:** {', '.join(all_timeframes)}\n\n"
+        "| Symbol | XGB | GB | RF | Linear | LSTM |\n"
+        "|---|---|---|---|---|---|\n"
+    )
     for sym, scores in results.items():
         def _fmt(key: str) -> str:
             v = scores.get(key)
             return f"{v:.4f}" if isinstance(v, float) else "N/A"
-        row = f"| {sym} | {_fmt('xgb')} | {_fmt('gb')} | {_fmt('rf')} | {_fmt('linear')} | {_fmt('lstm')} |\n"
+        row = (
+            f"| {sym} | {_fmt('xgb')} | {_fmt('gb')} | {_fmt('rf')} "
+            f"| {_fmt('linear')} | {_fmt('lstm')} |\n"
+        )
         summary += row
     _print_github_summary(summary)
     db.set_cache("training:last_scores", results)
@@ -242,6 +311,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
     ai_orchestrator = MultiAIOrchestrator(cfg)
+    gemini = ai_orchestrator._fallback  # GeminiOrchestrator for short-message payloads
     risk_mgr = RiskManager(cfg)
     supervised = SupervisedLearningModule(cfg)
     state_dir = Path(cfg.system.state_dir)

@@ -1,9 +1,13 @@
 """
 Quantum Trading System – ML Models
-Ensemble of LSTM, XGBoost, Gradient Boosting, Random Forest, and Linear
-classifier models that produce a combined directional signal (long / short / flat)
-with confidence.  Supports per-timeframe epoch training and combined decision
-tree-flow across multiplex timeframes.
+Ensemble of Neural Network (MLP), XGBoost, Gradient Boosting, Random Forest,
+and Linear classifier models that produce a combined directional signal
+(long / short / flat) with confidence.  Supports per-timeframe epoch training
+and combined decision tree-flow across multiplex timeframes.
+
+Neural network component uses scikit-learn's MLPClassifier with temporal-window
+feature augmentation, providing production-grade sequential pattern recognition
+without requiring an external deep-learning framework.
 """
 
 from __future__ import annotations
@@ -19,7 +23,21 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
+
+try:
+    from tqdm import tqdm as _tqdm
+
+    def _progress(iterable, **kwargs):
+        return _tqdm(iterable, ascii=True, dynamic_ncols=False, **kwargs)
+
+except ImportError:  # pragma: no cover – tqdm is optional at import time
+    def _progress(iterable, **kwargs):
+        desc = kwargs.get("desc", "")
+        if desc:
+            log.info("%s …", desc)
+        return iterable
 
 warnings.filterwarnings("ignore")
 
@@ -27,16 +45,6 @@ from src.config import AppConfig, MLConfig
 from src.utils import get_logger
 
 log = get_logger(__name__)
-
-# Try to import optional deep-learning dependency
-try:
-    import tensorflow as tf
-    from tensorflow import keras
-
-    _TF_AVAILABLE = True
-except ImportError:
-    _TF_AVAILABLE = False
-    log.warning("TensorFlow not available – LSTM model disabled")
 
 try:
     import xgboost as xgb
@@ -61,6 +69,10 @@ FEATURE_COLS = [
     "vol_20", "vol_5",
 ]
 
+# Number of previous timesteps used to construct temporal context features.
+# Each window contributes mean, std, and delta vectors (3 × n_features extra).
+_NN_WINDOW = 10
+
 
 def _build_label(df: pd.DataFrame, horizon: int = 3, threshold: float = 0.003) -> pd.Series:
     """
@@ -82,43 +94,92 @@ def _prepare_features(df: pd.DataFrame) -> Tuple[np.ndarray, List[str]]:
     return X, available
 
 
-# ── LSTM model ─────────────────────────────────────────────────────────────────
+# ── Neural Network (MLP) helpers ───────────────────────────────────────────────
 
-def _build_lstm(
-    input_shape: Tuple[int, int],
-    n_classes: int,
-    units: List[int],
-    dropout: float,
-) -> "keras.Model":
-    model = keras.Sequential()
-    for i, u in enumerate(units):
-        return_seq = i < len(units) - 1
-        model.add(
-            keras.layers.LSTM(
-                u,
-                return_sequences=return_seq,
-                input_shape=input_shape if i == 0 else None,
-            )
-        )
-        model.add(keras.layers.Dropout(dropout))
-    model.add(keras.layers.Dense(32, activation="relu"))
-    model.add(keras.layers.Dense(n_classes, activation="softmax"))
-    model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=0.001),
-        loss="sparse_categorical_crossentropy",
-        metrics=["accuracy"],
-    )
-    return model
+# Each augmented sample concatenates: current features + mean + std + delta.
+# The output width is therefore exactly (_FEATURE_MULTIPLIER × n_base_features).
+_FEATURE_MULTIPLIER = 4
 
 
-def _make_sequences(
-    X: np.ndarray, y: np.ndarray, seq_len: int
+def _make_temporal_features(
+    X: np.ndarray, y: np.ndarray, window: int
 ) -> Tuple[np.ndarray, np.ndarray]:
-    Xs, ys = [], []
-    for i in range(seq_len, len(X)):
-        Xs.append(X[i - seq_len : i])
-        ys.append(y[i])
-    return np.array(Xs, dtype=np.float32), np.array(ys, dtype=np.int32)
+    """Augment feature matrix with rolling temporal context.
+
+    For every sample at time *t* the following statistics are computed over the
+    previous *window* timesteps and appended to the feature vector:
+
+    * **mean**  – rolling average of each feature (trend component)
+    * **std**   – rolling standard deviation (volatility component)
+    * **delta** – last minus first value in the window (directional momentum)
+
+    This triples the feature count and gives the ``MLPClassifier`` the same
+    kind of temporal context that an LSTM receives via its recurrent state,
+    without the TensorFlow dependency.
+
+    The output width per sample is ``n_features * _FEATURE_MULTIPLIER``
+    (original + 3 temporal statistics).
+
+    Args:
+        X: Scaled feature matrix of shape (n_samples, n_features).
+        y: Label array of shape (n_samples,).
+        window: Number of look-back timesteps.
+
+    Returns:
+        (X_aug, y_aug) – augmented samples starting from index *window*.
+    """
+    n, f = X.shape
+    out_width = f * _FEATURE_MULTIPLIER
+    if n <= window:
+        # Not enough rows: return empty arrays with correct feature width.
+        return np.empty((0, out_width), dtype=np.float32), np.empty((0,), dtype=np.int32)
+
+    aug_X = np.empty((n - window, out_width), dtype=np.float32)
+    for i in range(window, n):
+        seg = X[i - window: i]          # shape (window, f)
+        aug_X[i - window] = np.concatenate([
+            X[i],                        # current features      (f)
+            seg.mean(axis=0),            # rolling mean          (f)
+            seg.std(axis=0),             # rolling std           (f)
+            seg[-1] - seg[0],            # momentum / delta      (f)
+        ])
+    return aug_X, y[window:]
+
+
+def _build_nn(n_features: int, n_classes: int) -> MLPClassifier:
+    """Return a production-grade MLPClassifier.
+
+    Architecture mirrors the removed LSTM's depth (three hidden layers) but
+    uses wider layers, L2 regularisation (``alpha``), and scikit-learn's
+    built-in early stopping so no external callback framework is required.
+
+    Layer sizes (512 → 256 → 128 → 64) provide ample capacity for the ~120
+    augmented features produced by :func:`_make_temporal_features` while
+    staying fast enough for 200-epoch multi-symbol training runs.
+
+    Args:
+        n_features: Input dimension (base + temporal features).
+        n_classes:  Number of output classes (3: flat / long / short).
+
+    Returns:
+        Untrained ``MLPClassifier``.
+    """
+    return MLPClassifier(
+        hidden_layer_sizes=(512, 256, 128, 64),
+        activation="relu",
+        solver="adam",
+        alpha=1e-4,              # L2 regularisation – replaces dropout
+        batch_size=32,
+        learning_rate="adaptive",
+        learning_rate_init=0.001,
+        max_iter=500,
+        early_stopping=True,
+        validation_fraction=0.15,
+        n_iter_no_change=15,     # patience – matches original LSTM callback
+        tol=1e-5,
+        random_state=42,
+        warm_start=False,
+    )
 
 
 # ── Ensemble ───────────────────────────────────────────────────────────────────
@@ -133,7 +194,9 @@ class QuantumEnsemble:
       - XGBoost for accuracy and confidence in tree-thinking regression
       - Random Forest for decision-making tree-thinking regression
       - Gradient Boosting for supporting ensemble diversity
-      - LSTM for sequential pattern recognition (optional)
+      - Neural Network (MLPClassifier) for sequential pattern recognition
+        via temporal-window feature augmentation – no external framework
+        required; uses scikit-learn's built-in MLPClassifier.
 
     Supports per-timeframe epoch training where each timeframe is trained
     separately, and a combined decision tree-flow merges predictions.
@@ -153,7 +216,10 @@ class QuantumEnsemble:
         self.xgb_model: Optional[Any] = None
         self.gb_model: Optional[GradientBoostingClassifier] = None
         self.rf_model: Optional[RandomForestClassifier] = None
-        self.lstm_model: Optional[Any] = None
+        # Neural network model (MLPClassifier); stored under key "lstm" in
+        # scores / weights dicts for backward compatibility with config and
+        # dashboard consumers.
+        self.nn_model: Optional[MLPClassifier] = None
         self.linear_model: Optional[LogisticRegression] = None
 
         # Per-timeframe models for epoch training
@@ -162,12 +228,21 @@ class QuantumEnsemble:
         self._model_weights = dict(self.ml_cfg.model_weights)
         self._training_accuracy: Dict[str, float] = {}
 
+
     # ── Per-timeframe epoch training ──────────────────────────────────────────
 
     def train_timeframe(
         self, df: pd.DataFrame, symbol: str, timeframe: str
     ) -> Dict[str, float]:
-        """Train models for a specific timeframe (epoch-ish per-timeframe)."""
+        """Train all sub-models for a specific timeframe.
+
+        Trains XGBoost, Random Forest, Logistic Regression, and the
+        Neural Network (MLP) on the supplied dataframe.  The MLP receives
+        temporally-augmented features via :func:`_make_temporal_features`.
+
+        Returns:
+            Dict mapping model name → validation accuracy for this timeframe.
+        """
         log.info(
             "Epoch training for %s@%s on %d rows", symbol, timeframe, len(df)
         )
@@ -254,10 +329,17 @@ class QuantumEnsemble:
         if not probas:
             return {"signal": 0, "confidence": 0.0, "timeframe": timeframe}
 
-        weights = {"xgb": self._model_weights["xgb"], "rf": self._model_weights["rf"], "linear": self._model_weights["linear"]}
-        w_sum = sum(weights[k] for k in probas)
+        model_weight_keys = {
+            "xgb": self._model_weights.get("xgb", 0.30),
+            "rf": self._model_weights.get("rf", 0.20),
+            "linear": self._model_weights.get("linear", 0.15),
+            "lstm": self._model_weights.get("lstm", 0.25),
+        }
+        w_sum = sum(model_weight_keys[k] for k in probas if k in model_weight_keys)
+        if w_sum <= 0:
+            w_sum = 1.0
         weighted_proba = sum(
-            weights[k] / w_sum * probas[k] for k in probas
+            model_weight_keys.get(k, 0.10) / w_sum * probas[k] for k in probas
         )[0]
 
         flat_prob = float(weighted_proba[0]) if len(weighted_proba) > 0 else 1.0
@@ -415,38 +497,24 @@ class QuantumEnsemble:
         )
         log.info("LinearClassifier val acc: %.4f", scores["linear"])
 
-        # LSTM
-        if _TF_AVAILABLE:
-            seq_len = 60
+        # Neural Network (MLP) with temporal-window feature augmentation
+        log.info("Training NeuralNetwork (MLP) …")
+        X_aug_train, y_aug_train = _make_temporal_features(
+            X_train_s, y_train, _NN_WINDOW
+        )
+        X_aug_val, y_aug_val = _make_temporal_features(
+            X_val_s, y_val, _NN_WINDOW
+        )
+        if len(X_aug_train) >= _NN_WINDOW and len(X_aug_val) > 0:
             try:
-                log.info("Training LSTM …")
-                X_seq_train, y_seq_train = _make_sequences(X_train_s, y_train, seq_len)
-                X_seq_val, y_seq_val = _make_sequences(X_val_s, y_val, seq_len)
-                if len(X_seq_train) > 0:
-                    self.lstm_model = _build_lstm(
-                        input_shape=(seq_len, X_train_s.shape[1]),
-                        n_classes=self.N_CLASSES,
-                        units=[128, 64, 32],
-                        dropout=0.2,
-                    )
-                    early_stop = keras.callbacks.EarlyStopping(
-                        patience=15, restore_best_weights=True
-                    )
-                    self.lstm_model.fit(
-                        X_seq_train, y_seq_train,
-                        validation_data=(X_seq_val, y_seq_val),
-                        epochs=100,
-                        batch_size=32,
-                        callbacks=[early_stop],
-                        verbose=0,
-                    )
-                    lstm_pred = np.argmax(
-                        self.lstm_model.predict(X_seq_val, verbose=0), axis=1
-                    )
-                    scores["lstm"] = float(np.mean(lstm_pred == y_seq_val))
-                    log.info("LSTM val acc: %.4f", scores["lstm"])
+                self.nn_model = _build_nn(X_aug_train.shape[1], self.N_CLASSES)
+                self.nn_model.fit(X_aug_train, y_aug_train)
+                scores["lstm"] = float(
+                    np.mean(self.nn_model.predict(X_aug_val) == y_aug_val)
+                )
+                log.info("NeuralNetwork val acc: %.4f", scores["lstm"])
             except Exception as exc:
-                log.warning("LSTM training failed: %s", exc)
+                log.warning("NeuralNetwork training failed: %s", exc)
 
         self._training_accuracy = scores
         self._save(symbol)
@@ -460,13 +528,24 @@ class QuantumEnsemble:
         epochs: int,
         reinforcement_alpha: float,
     ) -> List[Dict[str, Any]]:
-        """Train the ensemble over progressive epochs with reinforcement updates."""
+        """Train the ensemble over progressive epochs with reinforcement updates.
+
+        A tqdm progress bar is shown per epoch when the ``tqdm`` package is
+        available.  Falls back to plain logging otherwise.
+        """
         total_rows = len(df)
         if total_rows <= 0:
             return []
         epochs = max(1, epochs)
         epoch_results: List[Dict[str, Any]] = []
-        for epoch in range(1, epochs + 1):
+        epoch_bar = _progress(
+            range(1, epochs + 1),
+            desc=f"[{symbol}] epochs",
+            total=epochs,
+            unit="epoch",
+            leave=True,
+        )
+        for epoch in epoch_bar:
             progress = epoch / epochs
             # Ensure minimum 35% of data for stable training signals in early epochs.
             fraction = max(0.35, progress ** 0.5)
@@ -491,6 +570,166 @@ class QuantumEnsemble:
                     "weights": weights,
                 }
             )
+            best_score = max(scores.values(), default=0.0)
+            if hasattr(epoch_bar, "set_postfix"):
+                epoch_bar.set_postfix(rows=len(epoch_df), best_acc=f"{best_score:.4f}")
+        return epoch_results
+
+    # ── Multi-timeframe epoch training ────────────────────────────────────────
+
+    # Canonical timeframe ordering from lowest to highest resolution.
+    _TF_ORDER = ["1m", "5m", "15m", "1H", "1h", "1D", "1d"]
+
+    # Decision weights used in combined_decision – higher TF carries more weight.
+    _TF_WEIGHTS: Dict[str, float] = {
+        "1m": 0.10, "5m": 0.15, "15m": 0.25, "1H": 0.25, "1h": 0.25,
+        "1D": 0.25, "1d": 0.25,
+    }
+
+    def train_multi_timeframe_with_progression(
+        self,
+        tf_dataframes: Dict[str, pd.DataFrame],
+        symbol: str,
+        epochs: int,
+        reinforcement_alpha: float,
+        primary_tf: str = "1m",
+    ) -> List[Dict[str, Any]]:
+        """Train across all provided timeframes for *epochs* epochs.
+
+        For every epoch the ensemble is trained on a progressively growing
+        window of each timeframe's data (same schedule as
+        :meth:`train_with_progression`).  After all timeframes have been
+        trained, reinforcement-learning weight updates are applied based on
+        the *combined* (averaged) validation accuracy across timeframes.
+        The resulting model represents all timeframes; the primary timeframe
+        data is used for the global-ensemble ``train()`` call so that the
+        base ``predict()`` method works correctly.
+
+        Args:
+            tf_dataframes: Mapping of timeframe label → feature-enriched
+                OHLCV DataFrame (1m, 5m, 15m, 1h, 1d, …).
+            symbol: Trading symbol (e.g. "BTC").
+            epochs: Number of training epochs (default config: 200).
+            reinforcement_alpha: RL weight-update step-size.
+            primary_tf: The timeframe used for base-model training so that
+                :meth:`predict` works after this call.
+
+        Returns:
+            List of per-epoch result dicts with keys: epoch, tf_scores,
+            combined_scores, weights.
+        """
+        # Remove empty DataFrames.
+        valid_tfs = {
+            tf: df for tf, df in tf_dataframes.items() if not df.empty
+        }
+        if not valid_tfs:
+            log.warning("No valid timeframe data for %s – aborting MTF training", symbol)
+            return []
+
+        epochs = max(1, epochs)
+        tf_row_counts = {tf: len(df) for tf, df in valid_tfs.items()}
+        epoch_results: List[Dict[str, Any]] = []
+
+        # Sorted timeframe list for deterministic iteration.
+        ordered_tfs = sorted(
+            valid_tfs.keys(),
+            key=lambda t: self._TF_ORDER.index(t) if t in self._TF_ORDER else 99,
+        )
+
+        log.info(
+            "=== MTF Training: %s | %d epochs | timeframes: %s ===",
+            symbol, epochs, ordered_tfs,
+        )
+
+        epoch_bar = _progress(
+            range(1, epochs + 1),
+            desc=f"[{symbol}] MTF epochs",
+            total=epochs,
+            unit="epoch",
+            leave=True,
+        )
+        for epoch in epoch_bar:
+            progress = epoch / epochs
+            # Progressive data window: start at 35%, grow to 100%.
+            fraction = max(0.35, progress ** 0.5)
+
+            tf_scores: Dict[str, Dict[str, float]] = {}
+
+            # Train each timeframe model.
+            tf_bar = _progress(
+                ordered_tfs,
+                desc=f"  [{symbol}] e{epoch:03d} timeframes",
+                total=len(ordered_tfs),
+                unit="tf",
+                leave=False,
+            )
+            for tf in tf_bar:
+                df = valid_tfs[tf]
+                total_rows = tf_row_counts[tf]
+                window = max(1, int(total_rows * fraction))
+                epoch_df = df.tail(window)
+                scores = self.train_timeframe(epoch_df, symbol, tf)
+                if scores:
+                    tf_scores[tf] = scores
+                if hasattr(tf_bar, "set_postfix"):
+                    best = max(scores.values(), default=0.0)
+                    tf_bar.set_postfix(tf=tf, best_acc=f"{best:.4f}")
+
+            # Also train the global ensemble on the primary timeframe so that
+            # the ensemble's base-predict() method is current.
+            primary_df = valid_tfs.get(primary_tf)
+            if primary_df is None or primary_df.empty:
+                primary_df = next(iter(valid_tfs.values()))
+            p_total = len(primary_df)
+            p_window = max(1, int(p_total * fraction))
+            global_scores = self.train(primary_df.tail(p_window), symbol=symbol, save=False)
+
+            # Aggregate scores: average accuracy across all timeframes.
+            combined_scores: Dict[str, float] = {}
+            all_model_keys = set(global_scores.keys())
+            for tf_sc in tf_scores.values():
+                all_model_keys.update(tf_sc.keys())
+            for model in all_model_keys:
+                values = [
+                    tf_sc[model]
+                    for tf_sc in tf_scores.values()
+                    if model in tf_sc
+                ]
+                if model in global_scores:
+                    values.append(global_scores[model])
+                combined_scores[model] = float(np.mean(values)) if values else 0.0
+
+            # Reinforcement-learning weight update.
+            weights = self.apply_reinforcement(combined_scores, reinforcement_alpha)
+
+            try:
+                self._save(symbol)
+            except Exception as exc:
+                log.warning(
+                    "Failed to save model artifacts for %s (epoch %d): %s",
+                    symbol, epoch, exc,
+                )
+
+            epoch_results.append(
+                {
+                    "epoch": epoch,
+                    "tf_scores": tf_scores,
+                    "combined_scores": combined_scores,
+                    "weights": weights,
+                }
+            )
+
+            best_combined = max(combined_scores.values(), default=0.0)
+            if hasattr(epoch_bar, "set_postfix"):
+                epoch_bar.set_postfix(
+                    tfs=len(tf_scores),
+                    best_acc=f"{best_combined:.4f}",
+                )
+
+        log.info(
+            "MTF Training complete for %s (%d epochs, %d timeframes)",
+            symbol, epochs, len(ordered_tfs),
+        )
         return epoch_results
 
     def apply_reinforcement(
@@ -552,17 +791,23 @@ class QuantumEnsemble:
             probas["rf"] = self.rf_model.predict_proba(X_s)
         if self.linear_model is not None:
             probas["linear"] = self.linear_model.predict_proba(X_s)
-        if self.lstm_model is not None and _TF_AVAILABLE:
-            # Need sequence; use last 60 rows
-            seq_len = 60
+        if self.nn_model is not None:
+            # Build temporal-augmented feature vector for inference.
             all_X = self.scaler.transform(
                 df[available].values.astype(np.float32)
             )
-            if len(all_X) >= seq_len:
-                seq = all_X[-seq_len:][np.newaxis]
-                lstm_proba = self.lstm_model.predict(seq, verbose=0)[0]
-                # Ensure shape (1, 3)
-                probas["lstm"] = lstm_proba[np.newaxis]
+            if len(all_X) > _NN_WINDOW:
+                seg = all_X[-(_NN_WINDOW + 1):-1]  # window before last row
+                aug = np.concatenate([
+                    all_X[-1],
+                    seg.mean(axis=0),
+                    seg.std(axis=0),
+                    seg[-1] - seg[0],
+                ])[np.newaxis]
+                try:
+                    probas["lstm"] = self.nn_model.predict_proba(aug)
+                except Exception:
+                    pass
 
         if not probas:
             return {
@@ -640,8 +885,8 @@ class QuantumEnsemble:
             joblib.dump(self.rf_model, prefix / "rf.pkl")
         if self.linear_model:
             joblib.dump(self.linear_model, prefix / "linear.pkl")
-        if self.lstm_model and _TF_AVAILABLE:
-            self.lstm_model.save(str(prefix / "lstm"))
+        if self.nn_model:
+            joblib.dump(self.nn_model, prefix / "nn.pkl")
         log.info("Models saved to %s", prefix)
 
     def load(self, symbol: str) -> bool:
@@ -680,8 +925,10 @@ class QuantumEnsemble:
         linear_path = prefix / "linear.pkl"
         if linear_path.exists():
             self.linear_model = joblib.load(linear_path)
-        lstm_path = prefix / "lstm"
-        if lstm_path.exists() and _TF_AVAILABLE:
-            self.lstm_model = keras.models.load_model(str(lstm_path))
+        # Load neural network model (new .pkl format).
+        # Silently skip the legacy TensorFlow lstm/ directory if present.
+        nn_path = prefix / "nn.pkl"
+        if nn_path.exists():
+            self.nn_model = joblib.load(nn_path)
         log.info("Models loaded from %s", prefix)
         return True
