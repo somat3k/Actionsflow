@@ -420,12 +420,12 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
 
     global_epoch = 0
     while True:
-        global_epoch += 1
-        supervised.increment_epoch()
-
-        if max_epochs > 0 and global_epoch > max_epochs:
+        if max_epochs > 0 and global_epoch >= max_epochs:
             log.info("Infinity loop reached max_epochs=%d. Stopping.", max_epochs)
             break
+
+        global_epoch += 1
+        supervised.increment_epoch()
 
         log.info("── Infinity Loop Epoch %d ──", global_epoch)
 

@@ -96,7 +96,10 @@ class IndexDataFetcher:
             Whether to run ``add_all_features`` on the result.
         """
         if os.environ.get("TRADING_MODE") == "test":
-            return self._synthetic_df(symbol, interval, lookback_candles or 400)
+            return self._synthetic_df(
+                symbol, interval, lookback_candles or 400,
+                include_features=include_features,
+            )
 
         ticker = yf_ticker or symbol
         n = lookback_candles or self.cfg.data.training_lookback_candles
@@ -137,10 +140,21 @@ class IndexDataFetcher:
                     return existing
 
         # ── Full download ──────────────────────────────────────────────────
-        # For daily interval use max_years cap; for intraday use lookback_candles.
+        # For daily/weekly intervals use max_years cap as the outer bound, but
+        # always ensure the window is at least as wide as lookback_candles.
         max_years = self.cfg.data.historical_csv_max_years
         if interval in ("1d", "1wk"):
-            start = now - timedelta(days=365 * max_years)
+            cap_start = now - timedelta(days=365 * max_years)
+            # If lookback_candles requests a longer window, honour it (capped by
+            # max_years so we never request more than the configured limit).
+            start = min(cap_start, required_start)
+            if start < cap_start:
+                log.warning(
+                    "%s@%s lookback_candles=%d requests %s but historical_csv_max_years"
+                    " =%d caps download to %s; trimmed result may have fewer rows.",
+                    symbol, interval, n, required_start.date(), max_years, cap_start.date(),
+                )
+                start = cap_start
         else:
             start = required_start
 
@@ -324,13 +338,28 @@ class IndexDataFetcher:
     # ── Test / synthetic helpers ───────────────────────────────────────────────
 
     @staticmethod
-    def _synthetic_df(symbol: str, interval: str, n: int = 400) -> pd.DataFrame:
-        """Return deterministic synthetic OHLCV for test mode (no network calls)."""
-        rng = np.random.default_rng(abs(hash(symbol)) % (2 ** 31))
+    def _synthetic_df(
+        symbol: str,
+        interval: str,
+        n: int = 400,
+        include_features: bool = True,
+    ) -> pd.DataFrame:
+        """Return deterministic synthetic OHLCV for test mode (no network calls).
+
+        Uses ``zlib.crc32`` for a stable, process-independent seed and a fixed
+        anchor timestamp so the output is reproducible across runs and
+        ``PYTHONHASHSEED`` settings.
+        """
+        import zlib
+
+        seed = zlib.crc32(symbol.encode()) & 0x7FFF_FFFF
+        rng = np.random.default_rng(seed)
         price = 100.0
         interval_s = _interval_to_seconds(interval)
-        now = datetime.now(tz=timezone.utc)
-        timestamps = [now - timedelta(seconds=interval_s * (n - i)) for i in range(n)]
+        # Fixed anchor so timestamps don't change between runs.
+        _ANCHOR_MS = 1_700_000_000_000
+        anchor = datetime.fromtimestamp(_ANCHOR_MS / 1000.0, tz=timezone.utc)
+        timestamps = [anchor + timedelta(seconds=interval_s * i) for i in range(n)]
 
         rows = []
         for _ in range(n):
@@ -347,10 +376,11 @@ class IndexDataFetcher:
             )
 
         df = pd.DataFrame(rows, index=pd.DatetimeIndex(timestamps, name="timestamp"))
-        try:
-            df = add_all_features(df)
-        except Exception:
-            pass
+        if include_features:
+            try:
+                df = add_all_features(df)
+            except Exception:
+                pass
         return df
 
 

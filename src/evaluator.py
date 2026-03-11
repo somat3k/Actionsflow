@@ -202,8 +202,17 @@ class Evaluator:
             window = self.eval_cfg.stabs_window_trades
             recent_trades = trade_history[-window:]
             if len(recent_trades) >= 2:
+                # Compute self-consistent equity values for just this slice so
+                # that compute_metrics sees the correct equity curve for the
+                # short window rather than the full-run bookends.
+                pre_window_trades = trade_history[: len(trade_history) - len(recent_trades)]
+                pre_window_pnl = sum(t.get("pnl", 0.0) for t in pre_window_trades)
+                recent_window_pnl = sum(t.get("pnl", 0.0) for t in recent_trades)
+                short_initial_equity = initial_equity + pre_window_pnl
+                short_final_equity = short_initial_equity + recent_window_pnl
+
                 short_metrics = compute_metrics(
-                    recent_trades, initial_equity, final_equity
+                    recent_trades, short_initial_equity, short_final_equity
                 )
                 if (
                     short_metrics.win_rate < self.eval_cfg.stabs_min_win_rate

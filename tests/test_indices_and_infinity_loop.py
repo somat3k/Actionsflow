@@ -120,17 +120,59 @@ class TestIndexDataFetcherTestMode:
         assert not df1["close"].equals(df2["close"])
 
     def test_incremental_load_merges_gap(self, monkeypatch, tmp_path):
-        """When a CSV exists, the fetcher should detect and fill the gap."""
-        monkeypatch.setenv("TRADING_MODE", "test")
+        """When a CSV exists, the fetcher should detect and fill the gap.
+
+        We stub _download() to avoid network calls while still exercising the
+        real CSV load/save/merge code path (no TRADING_MODE=test early-return).
+        """
+        monkeypatch.delenv("TRADING_MODE", raising=False)
         from src.index_data_fetcher import IndexDataFetcher
+
+        call_count = {"n": 0}
+
+        def fake_download(self_inner, ticker, interval, start, end, retries=4):
+            """Return a deterministic DataFrame without hitting the network.
+
+            Data is anchored to ``end`` so rows survive any lookback trimming.
+            We generate enough rows (500) to support all technical indicators.
+            """
+            call_count["n"] += 1
+            n = 500
+            # Anchor near 'end' so rows survive any lookback trimming.
+            idx = pd.date_range(end=end, periods=n, freq="D", tz="UTC")
+            rng = np.random.default_rng(call_count["n"])
+            prices = 100.0 + np.cumsum(rng.normal(0, 0.5, n))
+            return pd.DataFrame(
+                {
+                    "open":   prices * 0.999,
+                    "high":   prices * 1.002,
+                    "low":    prices * 0.997,
+                    "close":  prices,
+                    "volume": np.full(n, 1_000_000, dtype=float),
+                },
+                index=idx,
+            )
+
+        monkeypatch.setattr(
+            "src.index_data_fetcher.IndexDataFetcher._download", fake_download
+        )
+
         cfg = load_config()
         csv_dir = tmp_path / "csv"
         cfg.data.historical_csv_dir = str(csv_dir)
+        cfg.data.rate_limit_delay_s = 0.0  # No sleep in tests
         fetcher = IndexDataFetcher(cfg)
-        # First download – creates the CSV
+
+        # First download – creates the CSV using the stubbed _download().
         fetcher.download_historical_csv("SPY", interval="1d")
-        # Second call should succeed (incremental logic)
-        df = fetcher.fetch_ohlcv_history("SPY", interval="1d", lookback_candles=100)
+        assert (csv_dir / "SPY_1d.csv").exists(), "First download should create the CSV file"
+
+        first_calls = call_count["n"]
+        assert first_calls >= 1
+
+        # Second call – exercises the real CSV load and (if gap exists) merge path.
+        # Use lookback_candles=300 so there is enough data for feature engineering.
+        df = fetcher.fetch_ohlcv_history("SPY", interval="1d", lookback_candles=300)
         assert not df.empty
 
 
