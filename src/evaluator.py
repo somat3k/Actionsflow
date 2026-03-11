@@ -53,6 +53,9 @@ class PerformanceMetrics:
     num_positions: int = 0
     gemini_answer_time_avg_s: float = 0.0
     action_time_avg_s: float = 0.0
+    # Stabs / pierces: short-window early-warning flags
+    stab_alert: bool = False          # True when short-window metrics breach stab thresholds
+    pierce_alert: bool = False        # True when Sharpe pierces the pierce threshold
 
 
 def compute_metrics(
@@ -181,6 +184,9 @@ class Evaluator:
         """
         Compute metrics and return (metrics, adjustment_recommendations).
         Each adjustment is a dict: {parameter, old_value, new_value, reason}.
+
+        Stabs/pierces are evaluated on the most recent short window of trades
+        in addition to the full-window standard evaluation.
         """
         metrics = compute_metrics(
             trade_history,
@@ -190,6 +196,42 @@ class Evaluator:
             gemini_answer_time_avg_s=gemini_answer_time_avg_s,
             action_time_avg_s=action_time_avg_s,
         )
+
+        # ── Stabs / pierces: short-window early-warning check ─────────────
+        if self.eval_cfg.stabs_enabled and trade_history:
+            window = self.eval_cfg.stabs_window_trades
+            recent_trades = trade_history[-window:]
+            if len(recent_trades) >= 2:
+                # Compute self-consistent equity values for just this slice so
+                # that compute_metrics sees the correct equity curve for the
+                # short window rather than the full-run bookends.
+                pre_window_trades = trade_history[: len(trade_history) - len(recent_trades)]
+                pre_window_pnl = sum(t.get("pnl", 0.0) for t in pre_window_trades)
+                recent_window_pnl = sum(t.get("pnl", 0.0) for t in recent_trades)
+                short_initial_equity = initial_equity + pre_window_pnl
+                short_final_equity = short_initial_equity + recent_window_pnl
+
+                short_metrics = compute_metrics(
+                    recent_trades, short_initial_equity, short_final_equity
+                )
+                if (
+                    short_metrics.win_rate < self.eval_cfg.stabs_min_win_rate
+                    or short_metrics.max_drawdown_pct > self.eval_cfg.stabs_max_drawdown_pct
+                ):
+                    metrics.stab_alert = True
+                    log.warning(
+                        "STAB alert: short-window WR=%.2f%% DD=%.2f%%",
+                        short_metrics.win_rate * 100,
+                        short_metrics.max_drawdown_pct * 100,
+                    )
+                if short_metrics.sharpe_ratio < self.eval_cfg.stabs_pierce_sharpe_threshold:
+                    metrics.pierce_alert = True
+                    log.warning(
+                        "PIERCE alert: short-window Sharpe=%.3f below threshold %.3f",
+                        short_metrics.sharpe_ratio,
+                        self.eval_cfg.stabs_pierce_sharpe_threshold,
+                    )
+
         adjustments = []
 
         if not self.eval_cfg.auto_adjust_enabled:
@@ -213,6 +255,13 @@ class Evaluator:
     ) -> str:
         """Format a human-readable performance report."""
         report_lines = [fmt_summary(asdict(metrics))]
+
+        if metrics.stab_alert:
+            report_lines.append("\n  ⚠️  STAB ALERT: short-window performance deterioration detected.")
+        if metrics.pierce_alert:
+            report_lines.append(
+                "\n  ⚠️  PIERCE ALERT: short-window Sharpe pierced the warning threshold."
+            )
 
         if adjustments:
             report_lines.append("\n  AUTO-ADJUSTMENTS RECOMMENDED:")

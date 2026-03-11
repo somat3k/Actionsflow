@@ -9,6 +9,7 @@ Usage:
     python -m src.main --mode live  --run-type signal
     python -m src.main --run-type evaluate
     python -m src.main --run-type train-models
+    python -m src.main --run-type infinity-train
 """
 
 from __future__ import annotations
@@ -163,16 +164,19 @@ def _ensure_model_ready(
 
 
 def run_training(config_path: Optional[Path] = None) -> int:
-    """Train ML models on historical Hyperliquid data.
+    """Train ML models on historical data (crypto + indices).
 
     Implements the 200-epoch harmonogram:
     - Fetches OHLCV data for all five timeframes (1m, 5m, 15m, 1h, 1d).
+    - Also fetches index/equity data (GOOGL, AAPL, NVDA, US30, SPX, JPM,
+      SPY, NASDAQ) via Yahoo Finance for cross-market training enrichment.
     - Runs ``training_epochs`` (default 200) progressive epochs per symbol.
     - Applies reinforcement-learning weight updates after each epoch.
     - Displays tqdm progress bars for the training session, each symbol,
       and each epoch's timeframe loop.
     """
     from src.ml_models import QuantumEnsemble
+    from src.index_data_fetcher import IndexDataFetcher
 
     cfg = load_config(config_path)
     db = _build_db_manager(cfg)
@@ -186,9 +190,36 @@ def run_training(config_path: Optional[Path] = None) -> int:
         m for m in _resolve_training_markets(cfg) if m.enabled
     ]
 
+    # ── Pre-fetch index / equity training data ────────────────────────────
+    index_fetcher = IndexDataFetcher(cfg)
+    index_dfs: Dict[str, Any] = {}
+    enabled_index_markets = [
+        m for m in cfg.trading.index_markets if m.enabled
+    ]
+    if enabled_index_markets:
+        log.info(
+            "Fetching index/equity training data for %d symbols …",
+            len(enabled_index_markets),
+        )
+        for idx_market in enabled_index_markets:
+            try:
+                df_idx = index_fetcher.fetch_ohlcv_history(
+                    idx_market.symbol,
+                    interval=cfg.data.daily_interval,
+                    lookback_candles=cfg.data.training_lookback_candles,
+                    yf_ticker=idx_market.yf_ticker or None,
+                )
+                if not df_idx.empty:
+                    index_dfs[idx_market.symbol] = df_idx
+                    log.info(
+                        "Index data ready: %s (%d rows)", idx_market.symbol, len(df_idx)
+                    )
+            except Exception as exc:
+                log.warning("Failed to fetch index data for %s: %s", idx_market.symbol, exc)
+
     log.info(
-        "=== TRAINING SESSION | %d epochs | %d symbols ===",
-        training_epochs, len(enabled_markets),
+        "=== TRAINING SESSION | %d epochs | %d crypto + %d index symbols ===",
+        training_epochs, len(enabled_markets), len(index_dfs),
     )
 
     fetcher = HyperliquidDataFetcher(cfg)
@@ -206,6 +237,16 @@ def run_training(config_path: Optional[Path] = None) -> int:
 
     results: Dict[str, Any] = {}
     epoch_scores: Dict[str, Any] = {}
+
+    # ── Train index models first (cross-market enrichment) ────────────────
+    if index_dfs:
+        for idx_sym, idx_df in index_dfs.items():
+            log.info("── Index symbol: %s ──", idx_sym)
+            try:
+                scores = ensemble.train(idx_df, symbol=idx_sym)
+                results[idx_sym] = scores
+            except Exception as exc:
+                log.warning("Index training failed for %s: %s", idx_sym, exc)
 
     # ── Session-level progress bar (symbols) ──────────────────────────────
     session_bar = _progress(
@@ -286,6 +327,8 @@ def run_training(config_path: Optional[Path] = None) -> int:
     db.set_cache("training:last_scores", results)
     if epoch_scores:
         db.set_cache("training:epoch_scores", epoch_scores)
+    if index_dfs:
+        db.set_cache("training:index_symbols", list(index_dfs.keys()))
     if results:
         _record_training_time(db, list(results.keys()))
     db.record_task_completion(
@@ -293,10 +336,236 @@ def run_training(config_path: Optional[Path] = None) -> int:
         run_type="train-models",
         mode=cfg.trading.mode,
         status="success",
-        metadata={"symbols_trained": list(results.keys())},
+        metadata={
+            "symbols_trained": list(results.keys()),
+            "index_symbols": list(index_dfs.keys()),
+        },
     )
     log.info("Training complete. Results: %s", results)
     return 0
+
+
+def run_infinity_training(config_path: Optional[Path] = None) -> int:
+    """Infinity-loop supervised-learning training mode.
+
+    The AI leader (Gemini / OpenRouter / Groq) acts as a supervised-learning
+    student in an endless loop of:
+      1. Train models for ``training_epochs`` epochs.
+      2. Evaluate performance metrics.
+      3. Detect zero-trade conditions → relax hyperparameters.
+      4. Consult AI leader for additional hyperparameter adjustments.
+      5. Repeat from step 1.
+
+    The loop runs until:
+    * ``INFINITY_MAX_EPOCHS`` env var is set to a positive integer and the
+      epoch counter reaches that limit.
+    * ``ml.infinity_loop.max_epochs`` config value > 0 and limit reached.
+    * The process is externally terminated (SIGTERM / Ctrl-C).
+
+    This function is intended to be used by a GitHub Actions workflow or a
+    long-running runner process.  It writes status to the database and
+    GitHub Actions step summary after every evaluation checkpoint.
+    """
+    from src.ml_models import QuantumEnsemble
+    from src.index_data_fetcher import IndexDataFetcher
+    from dataclasses import asdict
+
+    cfg = load_config(config_path)
+    db = _build_db_manager(cfg)
+    log.setLevel(cfg.system.log_level)
+
+    # Allow override from environment.
+    env_max = os.environ.get("INFINITY_MAX_EPOCHS")
+    if env_max:
+        try:
+            cfg.ml.infinity_loop_max_epochs = int(env_max)
+        except ValueError:
+            pass
+
+    max_epochs = cfg.ml.infinity_loop_max_epochs  # 0 = infinite
+    training_epochs = max(1, cfg.ml.training_epochs)
+    reinforcement_alpha = cfg.ml.reinforcement_alpha
+    force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
+
+    enabled_markets = [m for m in _resolve_training_markets(cfg) if m.enabled]
+    index_fetcher = IndexDataFetcher(cfg)
+    fetcher = HyperliquidDataFetcher(cfg)
+    ensemble = QuantumEnsemble(cfg)
+    dataset_mgr = DatasetManager(cfg, db)
+    ai_orchestrator = MultiAIOrchestrator(cfg)
+    supervised = SupervisedLearningModule(cfg)
+    evaluator = Evaluator(cfg)
+
+    # Restore supervised learning state if available.
+    state_dir = Path(cfg.system.state_dir)
+    sl_state_path = state_dir / "supervised_learning_state.json"
+    supervised.load_state(sl_state_path)
+
+    broker = PaperBroker(cfg)
+    broker.load(state_dir / "paper_broker.json")
+
+    all_timeframes = [
+        cfg.data.primary_interval,
+        cfg.data.secondary_interval,
+        cfg.data.macro_interval,
+        cfg.data.hourly_interval,
+        cfg.data.daily_interval,
+    ]
+
+    log.info(
+        "=== INFINITY TRAINING LOOP | max_epochs=%s | symbols=%d ===",
+        max_epochs or "∞",
+        len(enabled_markets),
+    )
+
+    global_epoch = 0
+    while True:
+        if max_epochs > 0 and global_epoch >= max_epochs:
+            log.info("Infinity loop reached max_epochs=%d. Stopping.", max_epochs)
+            break
+
+        global_epoch += 1
+        supervised.increment_epoch()
+
+        log.info("── Infinity Loop Epoch %d ──", global_epoch)
+
+        # ── Fetch index data (daily, cached) ──────────────────────────────
+        index_dfs: Dict[str, Any] = {}
+        for idx_market in cfg.trading.index_markets:
+            if not idx_market.enabled:
+                continue
+            try:
+                df_idx = index_fetcher.fetch_ohlcv_history(
+                    idx_market.symbol,
+                    interval=cfg.data.daily_interval,
+                    lookback_candles=cfg.data.training_lookback_candles,
+                    yf_ticker=idx_market.yf_ticker or None,
+                )
+                if not df_idx.empty:
+                    index_dfs[idx_market.symbol] = df_idx
+            except Exception as exc:
+                log.warning("Index fetch failed for %s: %s", idx_market.symbol, exc)
+
+        # ── Train index models ────────────────────────────────────────────
+        for idx_sym, idx_df in index_dfs.items():
+            try:
+                ensemble.train(idx_df, symbol=idx_sym)
+            except Exception as exc:
+                log.warning("Index training failed for %s: %s", idx_sym, exc)
+
+        # ── Train crypto models ───────────────────────────────────────────
+        for market in enabled_markets:
+            symbol = market.symbol
+            tf_dataframes: Dict[str, Any] = {}
+            for tf in all_timeframes:
+                df_tf = dataset_mgr.get_or_fetch_dataset(
+                    fetcher, symbol, tf,
+                    lookback_candles=cfg.data.training_lookback_candles,
+                    force_refresh=force_retrain,
+                )
+                if not df_tf.empty:
+                    tf_dataframes[tf] = df_tf
+            if not tf_dataframes:
+                continue
+            try:
+                if training_epochs > 1:
+                    ensemble.train_multi_timeframe_with_progression(
+                        tf_dataframes,
+                        symbol=symbol,
+                        epochs=training_epochs,
+                        reinforcement_alpha=reinforcement_alpha,
+                        primary_tf=cfg.data.primary_interval,
+                    )
+                else:
+                    primary_df = tf_dataframes.get(cfg.data.primary_interval) or next(
+                        iter(tf_dataframes.values())
+                    )
+                    ensemble.train(primary_df, symbol=symbol)
+            except Exception as exc:
+                log.warning("Training failed for %s: %s", symbol, exc)
+
+        # ── Periodic evaluation & hyperparameter adjustment ───────────────
+        if supervised.should_evaluate():
+            trade_history = [asdict(t) for t in broker.trade_history]
+            last_cycle = db.get_cache("signal:paper:last_cycle")
+            cached_gemini_time = 0.0
+            cached_action_time = 0.0
+            if isinstance(last_cycle, dict):
+                cached_gemini_time = float(last_cycle.get("avg_gemini_time_s", 0.0))
+                cached_action_time = float(last_cycle.get("avg_action_time_s", 0.0))
+
+            metrics, _ = evaluator.evaluate(
+                trade_history,
+                initial_equity=cfg.paper_broker.initial_equity,
+                final_equity=broker.equity,
+                gemini_answer_time_avg_s=cached_gemini_time,
+                action_time_avg_s=cached_action_time,
+            )
+            metrics_dict = asdict(metrics)
+
+            # Build AI-leader callback
+            def _ai_callback(m: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                try:
+                    review = ai_orchestrator.review_performance(
+                        trade_history[-20:], m
+                    )
+                    if isinstance(review, dict):
+                        return review.get("hyperparameter_suggestions")
+                except Exception as exc:
+                    log.warning("AI review failed: %s", exc)
+                return None
+
+            adjustments = supervised.evaluate_and_adjust_with_ai(
+                trade_history,
+                metrics_dict,
+                ai_callback=_ai_callback,
+            )
+
+            # Log stab/pierce alerts
+            if metrics.stab_alert or metrics.pierce_alert:
+                alert_msg = []
+                if metrics.stab_alert:
+                    alert_msg.append("STAB")
+                if metrics.pierce_alert:
+                    alert_msg.append("PIERCE")
+                log.warning(
+                    "Epoch %d: %s alert(s) detected. Adjustments applied: %d",
+                    global_epoch, "/".join(alert_msg), len(adjustments),
+                )
+
+            # Persist state
+            supervised.save_state(sl_state_path)
+            db.set_cache(
+                "infinity_loop:last_eval",
+                {
+                    "epoch": global_epoch,
+                    "total_trades": metrics.total_trades,
+                    "sharpe": metrics.sharpe_ratio,
+                    "win_rate": metrics.win_rate,
+                    "stab_alert": metrics.stab_alert,
+                    "pierce_alert": metrics.pierce_alert,
+                    "adjustments": len(adjustments),
+                },
+            )
+            _print_github_summary(
+                f"## 🔁 Infinity Loop – Epoch {global_epoch}\n\n"
+                f"- Trades: {metrics.total_trades} | "
+                f"Sharpe: {metrics.sharpe_ratio:.3f} | "
+                f"WR: {fmt_pct(metrics.win_rate)}\n"
+                f"- Adjustments: {len(adjustments)}\n"
+                f"- Stab: {'⚠️' if metrics.stab_alert else '✅'} | "
+                f"Pierce: {'⚠️' if metrics.pierce_alert else '✅'}\n"
+            )
+
+    db.record_task_completion(
+        task_name="infinity_training",
+        run_type="infinity-train",
+        mode=cfg.trading.mode,
+        status="success",
+        metadata={"final_epoch": global_epoch},
+    )
+    return 0
+
 
 
 def run_paper_signal(config_path: Optional[Path] = None) -> int:
@@ -717,7 +986,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Quantum Trading System")
     parser.add_argument(
         "--run-type",
-        choices=["training", "signal", "evaluate", "train-models"],
+        choices=["training", "signal", "evaluate", "train-models", "infinity-train"],
         required=True,
         help="What to run",
     )
@@ -742,6 +1011,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.run_type in ("training", "train-models"):
         return run_training(cfg_path)
+    elif args.run_type == "infinity-train":
+        return run_infinity_training(cfg_path)
     elif args.run_type == "signal":
         mode = os.environ.get("TRADING_MODE", "paper")
         if mode == "live":

@@ -53,6 +53,9 @@ class MarketConfig:
     symbol: str = "BTC"
     enabled: bool = True
     weight: float = 0.25
+    market_type: str = "crypto"      # "crypto" | "index"
+    training_only: bool = False       # True = used for training only, not live trading
+    yf_ticker: str = ""              # Yahoo Finance ticker (for index markets)
 
 
 @dataclass
@@ -61,6 +64,7 @@ class TradingConfig:
     initial_equity: float = 10_000.0
     base_currency: str = "USDC"
     markets: List[MarketConfig] = field(default_factory=list)
+    index_markets: List[MarketConfig] = field(default_factory=list)
     leverage: LeverageConfig = field(default_factory=LeverageConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     position_sizing: PositionSizingConfig = field(default_factory=PositionSizingConfig)
@@ -76,9 +80,12 @@ class DataConfig:
     hourly_interval: str = "1h"
     daily_interval: str = "1d"
     lookback_candles: int = 500
-    training_lookback_candles: int = 2000
+    training_lookback_candles: int = 5000
     dataset_dir: str = "datasets"
     dataset_format: str = "safetensors"
+    historical_csv_dir: str = "datasets/csv"
+    historical_csv_max_years: int = 10
+    rate_limit_delay_s: float = 1.0
 
 
 _DEFAULT_MODEL_WEIGHTS: Dict[str, float] = {
@@ -99,6 +106,13 @@ class MLConfig:
     model_weights: Dict[str, float] = field(
         default_factory=lambda: dict(_DEFAULT_MODEL_WEIGHTS)
     )
+    # Infinity-loop supervised learning
+    infinity_loop_enabled: bool = True
+    infinity_loop_max_epochs: int = 0         # 0 = infinite
+    infinity_zero_trade_threshold: int = 0
+    infinity_hp_adjust_step_threshold: float = 0.02
+    infinity_hp_adjust_agreement_step: float = 0.05
+    infinity_evaluation_interval: int = 10
 
 
 @dataclass
@@ -149,6 +163,12 @@ class EvaluationConfig:
     min_profit_factor: float = 1.20
     auto_adjust_enabled: bool = True
     evaluation_window_trades: int = 50
+    # Stabs/pierces: short-window early-warning checks
+    stabs_enabled: bool = True
+    stabs_window_trades: int = 10
+    stabs_min_win_rate: float = 0.35
+    stabs_max_drawdown_pct: float = 0.12
+    stabs_pierce_sharpe_threshold: float = 0.5
 
 
 @dataclass
@@ -208,8 +228,24 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             symbol=m["symbol"],
             enabled=m.get("enabled", True),
             weight=m.get("weight", 0.25),
+            market_type=m.get("market_type", "crypto"),
+            training_only=m.get("training_only", False),
+            yf_ticker=m.get("yf_ticker", ""),
         )
         for m in trading_raw.get("markets", [{"symbol": "BTC", "weight": 1.0}])
+    ]
+
+    # ── Index markets (training-only) ─────────────────────────
+    index_markets = [
+        MarketConfig(
+            symbol=m["symbol"],
+            enabled=m.get("enabled", True),
+            weight=m.get("weight", 0.10),
+            market_type=m.get("market_type", "index"),
+            training_only=m.get("training_only", True),
+            yf_ticker=m.get("yf_ticker", m["symbol"]),
+        )
+        for m in trading_raw.get("index_markets", [])
     ]
 
     # ── Leverage ──────────────────────────────────────────────
@@ -252,6 +288,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         ),
         base_currency=trading_raw.get("base_currency", "USDC"),
         markets=markets,
+        index_markets=index_markets,
         leverage=leverage,
         risk=risk,
         position_sizing=position_sizing,
@@ -284,6 +321,16 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         training_lookback_candles=training_lookback,
         dataset_dir=os.environ.get("DATASET_DIR", dataset_raw.get("dir", "datasets")),
         dataset_format=os.environ.get("DATASET_FORMAT", dataset_raw.get("format", "safetensors")),
+        historical_csv_dir=os.environ.get(
+            "HISTORICAL_CSV_DIR",
+            data_raw.get("historical_csv", {}).get("dir", "datasets/csv"),
+        ),
+        historical_csv_max_years=int(
+            data_raw.get("historical_csv", {}).get("max_years", 10)
+        ),
+        rate_limit_delay_s=float(
+            data_raw.get("historical_csv", {}).get("rate_limit_delay_s", 1.0)
+        ),
     )
 
     # ── ML ────────────────────────────────────────────────────
@@ -303,6 +350,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         model_cfg = models_raw.get(yaml_name, {})
         if "weight" in model_cfg:
             model_weights[internal_name] = float(model_cfg["weight"])
+    infinity_raw = training.get("infinity_loop", ml_raw.get("infinity_loop", {}))
     ml = MLConfig(
         long_threshold=float(signals.get("long_threshold", 0.60)),
         short_threshold=float(signals.get("short_threshold", 0.60)),
@@ -315,6 +363,16 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             os.environ.get("REINFORCEMENT_ALPHA", training.get("reinforcement_alpha", 0.1))
         ),
         model_weights=model_weights,
+        infinity_loop_enabled=bool(infinity_raw.get("enabled", True)),
+        infinity_loop_max_epochs=int(infinity_raw.get("max_epochs", 0)),
+        infinity_zero_trade_threshold=int(infinity_raw.get("zero_trade_threshold", 0)),
+        infinity_hp_adjust_step_threshold=float(
+            infinity_raw.get("hp_adjust_step_threshold", 0.02)
+        ),
+        infinity_hp_adjust_agreement_step=float(
+            infinity_raw.get("hp_adjust_agreement_step", 0.05)
+        ),
+        infinity_evaluation_interval=int(infinity_raw.get("evaluation_interval_epochs", 10)),
     )
 
     # ── Gemini ────────────────────────────────────────────────
@@ -376,6 +434,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     # ── Evaluation ────────────────────────────────────────────
     thresholds = eval_raw.get("thresholds", {})
     auto_adj = eval_raw.get("auto_adjust", {})
+    stabs_raw = eval_raw.get("stabs", {})
     evaluation = EvaluationConfig(
         min_sharpe=float(thresholds.get("min_sharpe", 1.0)),
         min_win_rate=float(thresholds.get("min_win_rate", 0.45)),
@@ -383,6 +442,11 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         min_profit_factor=float(thresholds.get("min_profit_factor", 1.20)),
         auto_adjust_enabled=bool(auto_adj.get("enabled", True)),
         evaluation_window_trades=int(auto_adj.get("evaluation_window_trades", 50)),
+        stabs_enabled=bool(stabs_raw.get("enabled", True)),
+        stabs_window_trades=int(stabs_raw.get("window_trades", 10)),
+        stabs_min_win_rate=float(stabs_raw.get("min_win_rate", 0.35)),
+        stabs_max_drawdown_pct=float(stabs_raw.get("max_drawdown_pct", 0.12)),
+        stabs_pierce_sharpe_threshold=float(stabs_raw.get("pierce_sharpe_threshold", 0.5)),
     )
 
     # ── System ────────────────────────────────────────────────
