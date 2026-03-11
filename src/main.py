@@ -311,6 +311,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
     ai_orchestrator = MultiAIOrchestrator(cfg)
+    gemini = ai_orchestrator._fallback  # GeminiOrchestrator for short-message payloads
     risk_mgr = RiskManager(cfg)
     supervised = SupervisedLearningModule(cfg)
     state_dir = Path(cfg.system.state_dir)
