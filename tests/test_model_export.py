@@ -59,7 +59,7 @@ def _trained_ensemble(tmp_path: Path) -> QuantumEnsemble:
     (tmp_path / "models").mkdir(exist_ok=True)
     cfg = load_config()
     ensemble = QuantumEnsemble(cfg)
-    df = _make_df(80)
+    df = _make_df()
     ensemble.train(df, symbol="BTC", save=True)
     return ensemble
 
@@ -74,7 +74,7 @@ class TestExportOnnx:
         (tmp_path / "models").mkdir()
         cfg = load_config()
         ensemble = QuantumEnsemble(cfg)
-        df = _make_df(80)
+        df = _make_df()
         ensemble.train(df, symbol="BTC", save=True)
 
         import src.ml_models as ml_mod
@@ -90,7 +90,7 @@ class TestExportOnnx:
         (tmp_path / "models").mkdir()
         cfg = load_config()
         ensemble = QuantumEnsemble(cfg)
-        df = _make_df(80)
+        df = _make_df()
         ensemble.train(df, symbol="BTC", save=True)
 
         exported = ensemble.export_onnx("BTC")
@@ -106,7 +106,7 @@ class TestExportOnnx:
         (tmp_path / "models").mkdir()
         cfg = load_config()
         ensemble = QuantumEnsemble(cfg)
-        df = _make_df(80)
+        df = _make_df()
         ensemble.train(df, symbol="ETH", save=True)
         # Forcibly remove one model after training
         ensemble.rf_model = None
@@ -127,7 +127,7 @@ class TestModelDelegationAgent:
         (tmp_path / "models").mkdir(exist_ok=True)
         cfg = load_config()
         ensemble = QuantumEnsemble(cfg)
-        df = _make_df(80)
+        df = _make_df()
         ensemble.train(df, symbol="BTC", save=True)
         return ModelDelegationAgent(ensemble)
 
@@ -227,7 +227,7 @@ class TestRunModelExport:
 
         # Pre-train a model
         cfg = load_config()
-        df = _make_df(80)
+        df = _make_df()
         ensemble = QuantumEnsemble(cfg)
         ensemble.train(df, symbol="BTC", save=True)
 
@@ -249,7 +249,7 @@ class TestRunModelExport:
             (tmp_path / d).mkdir(parents=True, exist_ok=True)
 
         cfg = load_config()
-        df = _make_df(80)
+        df = _make_df()
 
         # Only train BTC to limit scope
         ensemble = QuantumEnsemble(cfg)
@@ -312,7 +312,7 @@ class TestDelegationAgentInSignalCycle:
         for d in ("models", "results", ".trading_state"):
             (tmp_path / d).mkdir(parents=True, exist_ok=True)
 
-        df = _make_df(80)
+        df = _make_df()
 
         class DummyEnsemble:
             def __init__(self, config):
