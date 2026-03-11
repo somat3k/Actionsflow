@@ -289,7 +289,7 @@ class QuantumEnsemble:
         valid_scores = {
             key: float(score)
             for key, score in scores.items()
-            if isinstance(score, (int, float))
+            if isinstance(score, (int, float)) and float(score) > 0
         }
         total_score = sum(valid_scores.values())
         if total_score <= 0 or not valid_scores:

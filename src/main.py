@@ -22,7 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.config import AppConfig, load_config
+from src.config import AppConfig, MarketConfig, load_config
 from src.data_fetcher import HyperliquidDataFetcher
 from src.database_manager import DatabaseManager
 from src.evaluator import Evaluator, compute_metrics
@@ -97,7 +97,7 @@ def _record_training_time(db: DatabaseManager, symbols: List[str]) -> None:
     db.set_cache("training:last_run", last_runs)
 
 
-def _resolve_training_markets(cfg: AppConfig) -> List[Any]:
+def _resolve_training_markets(cfg: AppConfig) -> List[MarketConfig]:
     """Filter training markets based on TRAINING_SYMBOLS env var if provided."""
     raw = os.environ.get("TRAINING_SYMBOLS")
     if not raw:

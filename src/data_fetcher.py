@@ -82,21 +82,28 @@ class HyperliquidDataFetcher:
         lookback_candles: Optional[int] = None,
         start_ms: Optional[int] = None,
         end_ms: Optional[int] = None,
+        include_features: bool = True,
     ) -> pd.DataFrame:
         """Download extended-range OHLCV history for dataset creation."""
+        n = lookback_candles or self.cfg.data.lookback_candles
+        end_ms = end_ms or utc_now_ms()
+        start_ms = start_ms or (end_ms - n * interval_to_ms(interval))
+
         log.info(
             "Downloading OHLCV history for %s (%s, lookback=%s)",
             symbol,
             interval,
-            lookback_candles or self.cfg.data.lookback_candles,
+            n,
         )
-        return self.fetch_candles(
-            symbol,
-            interval,
-            lookback_candles=lookback_candles,
-            start_ms=start_ms,
-            end_ms=end_ms,
-        )
+        raw = self._fetch_candle_snapshot(symbol, interval, start_ms, end_ms)
+        if not raw:
+            log.warning("No candle history returned for %s@%s", symbol, interval)
+            return pd.DataFrame()
+
+        df = candles_to_dataframe(raw)
+        if include_features:
+            df = add_all_features(df)
+        return df
 
     def fetch_multi_timeframe(self, symbol: str) -> Dict[str, pd.DataFrame]:
         """Fetch candles for primary, secondary, and macro timeframes."""

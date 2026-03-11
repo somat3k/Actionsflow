@@ -112,7 +112,7 @@ class DatasetManager:
         for col in working.columns:
             series = pd.to_numeric(working[col], errors="coerce")
             if series.isnull().any():
-                log.warning("NaN values detected in dataset column '%s' – applying fill", col)
+                log.warning("NaN values detected in dataset column '%s' - applying fill", col)
                 series = series.ffill().bfill().fillna(0)
             arr = series.to_numpy()
             if arr.dtype.kind in {"i", "u"}:

@@ -13,8 +13,12 @@ def test_reinforcement_updates_model_weights():
 
     updated = ensemble.apply_reinforcement({"xgb": 0.9, "gb": 0.1}, alpha=0.5)
 
-    expected_xgb = ((1 - 0.5) * before["xgb"] + 0.5 * 0.9) / 1.25
-    expected_gb = ((1 - 0.5) * before["gb"] + 0.5 * 0.1) / 1.25
+    alpha = 0.5
+    updated_xgb = (1 - alpha) * before["xgb"] + alpha * 0.9
+    updated_gb = (1 - alpha) * before["gb"] + alpha * 0.1
+    expected_total = updated_xgb + updated_gb + before["rf"] + before["lstm"]
+    expected_xgb = updated_xgb / expected_total
+    expected_gb = updated_gb / expected_total
 
     assert updated["xgb"] == pytest.approx(expected_xgb, rel=1e-6)
     assert updated["gb"] == pytest.approx(expected_gb, rel=1e-6)

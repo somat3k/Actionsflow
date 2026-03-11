@@ -6,6 +6,7 @@ Uses Gemini as a fallback when other providers are unavailable.
 from __future__ import annotations
 
 import json
+import statistics
 import textwrap
 from collections import Counter
 from typing import Any, Dict, List, Optional
@@ -113,9 +114,16 @@ class OpenAICompatibleOrchestrator:
                 log.warning("%s API response missing message content", self.name)
                 return None
             return message.get("content")
+        except requests.exceptions.Timeout as exc:
+            log.warning("%s API timeout after %ss: %s", self.name, self.timeout_seconds, exc)
+        except requests.exceptions.ConnectionError as exc:
+            log.warning("%s API connection error: %s", self.name, exc)
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response else "unknown"
+            log.warning("%s API HTTP error (%s): %s", self.name, status, exc)
         except requests.exceptions.RequestException as exc:
             log.warning("%s API call failed: %s", self.name, exc)
-            return None
+        return None
 
 
 class GeminiProvider:
@@ -370,7 +378,9 @@ def _merge_leverage(responses: List[Dict[str, Any]], current_leverage: int) -> D
         if resp.get("recommended_leverage") is not None
     ]
     avg_lev = (
-        round(sum(map(float, leverages)) / len(leverages)) if leverages else current_leverage
+        round(statistics.median(map(float, leverages)))
+        if leverages
+        else current_leverage
     )
     reasoning = "; ".join(
         [resp.get("reasoning", "") for resp in responses if resp.get("reasoning")]
