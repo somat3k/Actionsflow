@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+_SNAPSHOT_MAX_FUTURE_OFFSET_MS = 7 * 24 * 60 * 60 * 1000
+
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 
@@ -63,15 +65,8 @@ def parse_snapshot_end_ms(
                 raw,
             )
         return None
-    if value < 0:
-        if logger:
-            logger.warning(
-                "Invalid DATA_SNAPSHOT_END_MS=%s; ignoring value",
-                raw,
-            )
-        return None
     min_epoch_ms = int(datetime(2000, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
-    max_epoch_ms = utc_now_ms() + 7 * 24 * 60 * 60 * 1000
+    max_epoch_ms = utc_now_ms() + _SNAPSHOT_MAX_FUTURE_OFFSET_MS
     if value < min_epoch_ms or value > max_epoch_ms:
         if logger:
             logger.warning(
