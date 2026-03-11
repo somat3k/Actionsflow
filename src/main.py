@@ -1062,7 +1062,12 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
 
     log.info("=== FULL PIPELINE CYCLE ===")
     snapshot_end_ms = _ensure_data_snapshot_end_ms()
-    log.info("Data snapshot end time locked to %s", snapshot_end_ms)
+    snapshot_dt = datetime.fromtimestamp(snapshot_end_ms / 1000, tz=timezone.utc)
+    log.info(
+        "Data snapshot end time locked to %s (%s)",
+        snapshot_end_ms,
+        snapshot_dt.isoformat(),
+    )
 
     steps = [
         ("training", run_training),
@@ -1071,8 +1076,8 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
         ("export", run_model_export),
     ]
     for name, step in steps:
-        rc = step(config_path)
-        if rc != 0:
+        step_result = step(config_path)
+        if step_result != 0:
             log.error("Full cycle failed during %s step", name)
             db.record_task_completion(
                 task_name="full_cycle",
@@ -1081,7 +1086,7 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
                 status="failed",
                 metadata={"failed_step": name},
             )
-            return rc
+            return step_result
 
     eligible, reason = _resolve_trading_eligibility(db)
     _print_github_summary(
@@ -1106,6 +1111,13 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
         else:
             trade_rc = run_live_signal(config_path)
             if trade_rc != 0:
+                db.record_task_completion(
+                    task_name="full_cycle",
+                    run_type="full-cycle",
+                    mode=mode,
+                    status="failed",
+                    metadata={"failed_step": "live_signal"},
+                )
                 return trade_rc
 
     db.record_task_completion(
