@@ -1,6 +1,7 @@
 #property strict
 
 input string BridgeUrl = "http://127.0.0.1:8001/signal";
+input string BridgeToken = "";
 input int HistoryBars = 120;
 input int RequestTimeoutMs = 3000;
 
@@ -41,12 +42,14 @@ string BuildPayload(const MqlRates &rates[], int copied)
     int long_count = 0;
     int short_count = 0;
     GetOpenPositionCounts(long_count, short_count);
+    string symbol = JsonEscape(Symbol());
+    string timeframe = JsonEscape(TimeframeToString((int)Period()));
     return StringFormat(
         "{\"platform\":\"mql5\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"candles\":%s,"
         "\"account\":{\"equity\":%G,\"balance\":%G,\"leverage\":%d},"
         "\"positions\":{\"long\":%d,\"short\":%d}}",
-        Symbol(),
-        TimeframeToString((int)Period()),
+        symbol,
+        timeframe,
         candles_json,
         AccountInfoDouble(ACCOUNT_EQUITY),
         AccountInfoDouble(ACCOUNT_BALANCE),
@@ -64,7 +67,7 @@ string BuildCandlesJson(const MqlRates &rates[], int copied)
     {
         string item = StringFormat(
             "{\"time\":\"%s\",\"open\":%G,\"high\":%G,\"low\":%G,\"close\":%G,\"volume\":%d}",
-            TimeToString(rates[i].time, TIME_DATE | TIME_MINUTES | TIME_SECONDS),
+            FormatTimestamp(rates[i].time),
             rates[i].open,
             rates[i].high,
             rates[i].low,
@@ -85,6 +88,8 @@ bool PostJson(string url, string payload, string &response)
     StringToCharArray(payload, post, 0, WHOLE_ARRAY, CP_UTF8);
     char result[];
     string headers = "Content-Type: application/json\r\n";
+    if (BridgeToken != "")
+        headers += "X-Bridge-Token: " + BridgeToken + "\r\n";
     string result_headers;
     ResetLastError();
     int res = WebRequest("POST", url, headers, RequestTimeoutMs, post, result, result_headers);
@@ -94,6 +99,13 @@ bool PostJson(string url, string payload, string &response)
         return false;
     }
     response = CharArrayToString(result, 0, -1, CP_UTF8);
+    if (res < 200 || res >= 300)
+    {
+        PrintFormat("WebRequest HTTP error: status=%d", res);
+        Print("Response headers: ", result_headers);
+        Print("Response body: ", response);
+        return false;
+    }
     return true;
 }
 
@@ -134,6 +146,22 @@ string TimeframeToString(int timeframe)
     if (timeframe == PERIOD_W1) return "W1";
     if (timeframe == PERIOD_MN1) return "MN1";
     return "M" + IntegerToString(timeframe);
+}
+
+string FormatTimestamp(datetime value)
+{
+    string stamp = TimeToString(value, TIME_DATE | TIME_MINUTES | TIME_SECONDS);
+    StringReplace(stamp, ".", "-");
+    StringReplace(stamp, " ", "T");
+    return stamp + "Z";
+}
+
+string JsonEscape(string value)
+{
+    string escaped = value;
+    StringReplace(escaped, "\\", "\\\\");
+    StringReplace(escaped, "\"", "\\\"");
+    return escaped;
 }
 
 void GetOpenPositionCounts(int &long_count, int &short_count)

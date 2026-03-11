@@ -31,9 +31,10 @@ MQL5, and cTrader cBot (cAlgo).
     "balance": 10000,
     "leverage": 30
   },
+  "initial_equity": 10000,
   "positions": {
-    "long": 0.0,
-    "short": 0.0
+    "long": 0,
+    "short": 0
   },
   "market_snapshot": {
     "funding": {
@@ -99,6 +100,31 @@ MQL5, and cTrader cBot (cAlgo).
     "risk_usd": 27.6,
     "allowed": true,
     "reject_reason": ""
+  },
+  "metrics": {
+    "total_return_pct": 0.012,
+    "annualized_return_pct": 0.18,
+    "sharpe_ratio": 1.12,
+    "sortino_ratio": 1.45,
+    "calmar_ratio": 0.95,
+    "max_drawdown_pct": 0.08,
+    "win_rate": 0.55,
+    "profit_factor": 1.24,
+    "avg_trade_pnl_usd": 12.4,
+    "avg_win_usd": 38.1,
+    "avg_loss_usd": 21.3,
+    "avg_trade_duration_hours": 1.4,
+    "trades_per_day": 3.2,
+    "total_trades": 28,
+    "winning_trades": 15,
+    "losing_trades": 13,
+    "avg_leverage_used": 18.5,
+    "avg_confidence": 0.68,
+    "gross_profit": 571.4,
+    "gross_loss": 460.2,
+    "total_fees": 12.3,
+    "final_equity": 10000,
+    "initial_equity": 9880
   }
 }
 ```
@@ -110,10 +136,14 @@ Signal mapping:
 - `2` = SHORT
 
 Notes:
+- Candle timestamps should be ISO-8601 strings. The MT4/MT5 templates format broker server time
+  as ISO-8601 with a trailing `Z`.
 - `market_snapshot` and `recent_trades` are optional. When omitted, the bridge defaults to
   zero microstructure values and empty performance metrics.
+- `positions.long` / `positions.short` are counts of open positions for the symbol.
+- `initial_equity` is optional and lets you override the performance baseline used for metrics.
 - Set `reset_daily: true` to reset the risk manager daily tracking when you start a new session.
-- `position` is only populated when the final signal is `1` or `2`. It uses the same
+- `position` is `null` when the final signal is `0` or the model is unavailable. It uses the same
   RiskManager logic as the core project.
 
 ## Python Bridge (shared)
@@ -129,6 +159,10 @@ Environment variables:
 - `TRADING_CONFIG_PATH` (optional): path to `config/trading_config.yaml`
 - `BRIDGE_HOST` (default `127.0.0.1`)
 - `BRIDGE_PORT` (default `8001`)
+- `BRIDGE_TOKEN` (optional): require `X-Bridge-Token` header for `/signal` requests
+- `BRIDGE_MAX_BODY_BYTES` (default `1000000`): max request body size in bytes
+
+> Binding the bridge to a non-loopback interface requires `BRIDGE_TOKEN` to be set.
 
 > Ensure models are trained and saved before running the bridge:
 >
@@ -140,13 +174,16 @@ Environment variables:
 
 - Add `http://127.0.0.1:8001` to **Tools → Options → Expert Advisors → Allow WebRequest**.
 - Compile `externals/mql4/QuantumGeminiBridge.mq4` and attach it to a chart.
+- If `BRIDGE_TOKEN` is set, configure the EA’s `BridgeToken` input to match.
 
 ## MetaTrader 5 (MQL5)
 
 - Add `http://127.0.0.1:8001` to **Tools → Options → Expert Advisors → Allow WebRequest**.
 - Compile `externals/mql5/QuantumGeminiBridge.mq5` and attach it to a chart.
+- If `BRIDGE_TOKEN` is set, configure the EA’s `BridgeToken` input to match.
 
 ## cTrader cBot (cAlgo)
 
 - Create a new cBot and replace its content with `externals/ctrader/QuantumGeminiBridge.cs`.
 - The cBot requires `AccessRights.Internet` to call the local bridge.
+- If `BRIDGE_TOKEN` is set, configure the cBot’s `BridgeToken` parameter to match.

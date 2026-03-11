@@ -18,35 +18,59 @@ namespace cAlgo.Robots
         [Parameter("History Bars", DefaultValue = 120)]
         public int HistoryBars { get; set; }
 
+        [Parameter("Bridge Timeout (sec)", DefaultValue = 3)]
+        public int BridgeTimeoutSeconds { get; set; }
+
+        [Parameter("Bridge Token", DefaultValue = "")]
+        public string BridgeToken { get; set; }
+
         private HttpClient _client;
 
         protected override void OnStart()
         {
-            _client = new HttpClient();
+            _client = new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(BridgeTimeoutSeconds)
+            };
         }
 
         protected override void OnBar()
         {
             var request = BuildRequest();
-            var json = JsonSerializer.Serialize(request);
-            using var content = new StringContent(json, Encoding.UTF8, "application/json");
-            var response = _client.PostAsync(BridgeUrl, content).GetAwaiter().GetResult();
-            var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-
-            if (!response.IsSuccessStatusCode)
+            try
             {
-                Print("Bridge error: {0}", body);
-                return;
-            }
+                var json = JsonSerializer.Serialize(request);
+                using var content = new StringContent(json, Encoding.UTF8, "application/json");
+                using var message = new HttpRequestMessage(HttpMethod.Post, BridgeUrl)
+                {
+                    Content = content
+                };
+                if (!string.IsNullOrWhiteSpace(BridgeToken))
+                {
+                    message.Headers.Add("X-Bridge-Token", BridgeToken);
+                }
+                using var response = _client.SendAsync(message).GetAwaiter().GetResult();
+                var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
 
-            var bridgeResponse = JsonSerializer.Deserialize<BridgeResponse>(body);
-            if (bridgeResponse == null)
+                if (!response.IsSuccessStatusCode)
+                {
+                    Print("Bridge error: {0}", body);
+                    return;
+                }
+
+                var bridgeResponse = JsonSerializer.Deserialize<BridgeResponse>(body);
+                if (bridgeResponse == null)
+                {
+                    Print("Bridge response empty.");
+                    return;
+                }
+
+                Print("Signal={0} Confidence={1:F2} Regime={2}", bridgeResponse.Signal, bridgeResponse.Confidence, bridgeResponse.Regime);
+            }
+            catch (Exception ex)
             {
-                Print("Bridge response empty.");
-                return;
+                Print("Bridge request failed: {0}", ex.Message);
             }
-
-            Print("Signal={0} Confidence={1:F2} Regime={2}", bridgeResponse.Signal, bridgeResponse.Confidence, bridgeResponse.Regime);
         }
 
         protected override void OnStop()
