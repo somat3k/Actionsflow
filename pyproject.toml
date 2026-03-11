@@ -27,6 +27,7 @@ dependencies = [
 [project.optional-dependencies]
 deep-learning = ["tensorflow>=2.14,<3.0"]
 dev = ["pytest>=7.4,<9.0", "pytest-mock>=3.12,<4.0", "ruff>=0.3"]
+datasets = ["safetensors>=0.4.2,<1.0"]
 
 [project.scripts]
 quantum-trader = "src.main:main"

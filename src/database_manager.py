@@ -47,6 +47,20 @@ class DatabaseManager:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS datasets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    start_ms INTEGER,
+                    end_ms INTEGER,
+                    rows INTEGER NOT NULL,
+                    path TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
             conn.commit()
 
     def record_task_completion(
@@ -106,3 +120,57 @@ class DatabaseManager:
         if row is None:
             return None
         return json.loads(row[0])
+
+    def record_dataset(
+        self,
+        symbol: str,
+        interval: str,
+        start_ms: Optional[int],
+        end_ms: Optional[int],
+        rows: int,
+        path: str,
+    ) -> None:
+        """Record a stored dataset artifact."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO datasets
+                (symbol, interval, start_ms, end_ms, rows, path, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    symbol.upper(),
+                    interval,
+                    start_ms,
+                    end_ms,
+                    rows,
+                    path,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            conn.commit()
+
+    def get_latest_dataset(self, symbol: str, interval: str) -> Optional[Dict[str, Any]]:
+        """Return the most recent dataset metadata for a symbol/interval."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT symbol, interval, start_ms, end_ms, rows, path, created_at
+                FROM datasets
+                WHERE symbol = ? AND interval = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (symbol.upper(), interval),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "symbol": row[0],
+            "interval": row[1],
+            "start_ms": row[2],
+            "end_ms": row[3],
+            "rows": row[4],
+            "path": row[5],
+            "created_at": row[6],
+        }

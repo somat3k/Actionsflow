@@ -36,6 +36,7 @@ ENV/
 .trading_state/
 models/
 results/
+datasets/
 
 # Secrets & .env
 .env
