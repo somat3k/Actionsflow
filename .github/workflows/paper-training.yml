@@ -17,11 +17,15 @@ on:
       symbols:
         description: "Comma-separated symbols to train (e.g. BTC,ETH,SOL,ARB)"
         required: false
-        default: "BTC,ETH,SOL,ARB"
+        default: "BTC,ETH,SOL,ARB,ZRO,AAVE,ADA,CATI"
       lookback_candles:
         description: "Number of candles to use for training"
         required: false
         default: "2000"
+      training_epochs:
+        description: "Number of training epochs"
+        required: false
+        default: "3"
       force_retrain:
         description: "Force retraining even if models are fresh"
         required: false
@@ -69,8 +73,10 @@ jobs:
 
       - name: Set training environment
         run: |
-          echo "TRAINING_SYMBOLS=${{ inputs.symbols || 'BTC,ETH,SOL,ARB' }}" >> "$GITHUB_ENV"
+          echo "TRAINING_SYMBOLS=${{ inputs.symbols || 'BTC,ETH,SOL,ARB,ZRO,AAVE,ADA,CATI' }}" >> "$GITHUB_ENV"
           echo "LOOKBACK_CANDLES=${{ inputs.lookback_candles || '2000' }}" >> "$GITHUB_ENV"
+          echo "TRAINING_EPOCHS=${{ inputs.training_epochs || '3' }}" >> "$GITHUB_ENV"
+          echo "FORCE_RETRAIN=${{ inputs.force_retrain || 'false' }}" >> "$GITHUB_ENV"
 
       - name: Run model training
         env:
@@ -80,6 +86,7 @@ jobs:
           echo "## 🤖 Model Training Started" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Symbols:** $TRAINING_SYMBOLS" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Lookback:** $LOOKBACK_CANDLES candles" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Epochs:** $TRAINING_EPOCHS" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           python -m src.main --run-type train-models --mode paper
 

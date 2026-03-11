@@ -43,7 +43,7 @@ on:
       symbols:
         description: "Comma-separated symbols to trade (e.g. BTC,ETH)"
         required: false
-        default: "BTC,ETH,SOL,ARB"
+        default: "BTC,ETH,SOL,ARB,ZRO,AAVE,ADA,CATI"
 
   # Trigger from other workflows (training completion, evaluation, etc.)
   workflow_call:
@@ -149,6 +149,8 @@ jobs:
         env:
           TRADING_MODE: ${{ needs.setup.outputs.trading_mode }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           HYPERLIQUID_SECRET: ${{ secrets.HYPERLIQUID_SECRET || secrets.HYPERLIQUID_PRIVATE_KEY }}
           HYPERLIQUID_PRIVATE_KEY: ${{ secrets.HYPERLIQUID_PRIVATE_KEY || secrets.HYPERLIQUID_SECRET }}
           HYPERLIQUID_ADDRESS: ${{ secrets.HYPERLIQUID_ADDRESS || secrets.HYPERLIQUID_WALLET_ADDRESS }}

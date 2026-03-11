@@ -9,6 +9,9 @@ joblib>=1.3
 # Install separately if needed:
 # tensorflow>=2.14,<3.0   # or tensorflow-cpu
 
+# ── Dataset caching (optional) ────────────────────────────────────────────────
+# safetensors>=0.4.2,<1.0
+
 # ── Google Gemini AI ──────────────────────────────────────────────────────────
 google-generativeai>=0.5,<1.0
 

@@ -75,6 +75,29 @@ class HyperliquidDataFetcher:
         )
         return df
 
+    def download_ohlcv_history(
+        self,
+        symbol: str,
+        interval: str,
+        lookback_candles: Optional[int] = None,
+        start_ms: Optional[int] = None,
+        end_ms: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Download extended-range OHLCV history for dataset creation."""
+        log.info(
+            "Downloading OHLCV history for %s (%s, lookback=%s)",
+            symbol,
+            interval,
+            lookback_candles or self.cfg.data.lookback_candles,
+        )
+        return self.fetch_candles(
+            symbol,
+            interval,
+            lookback_candles=lookback_candles,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+
     def fetch_multi_timeframe(self, symbol: str) -> Dict[str, pd.DataFrame]:
         """Fetch candles for primary, secondary, and macro timeframes."""
         cfg = self.cfg.data
@@ -276,8 +299,8 @@ class HyperliquidDataFetcher:
             }
         if ptype == "metaAndAssetCtxs":
             # Return entries for all common symbols so fetch_funding_rate works for any.
-            symbols = ["BTC", "ETH", "SOL", "ARB"]
-            prices = [40_000.0, 3_000.0, 100.0, 1.0]
+            symbols = ["BTC", "ETH", "SOL", "ARB", "ZRO", "AAVE", "ADA", "CATI"]
+            prices = [40_000.0, 3_000.0, 100.0, 1.0, 4.2, 95.0, 0.55, 0.22]
             universe = [{"name": s} for s in symbols]
             contexts = [
                 {

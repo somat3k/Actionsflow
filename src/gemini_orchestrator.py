@@ -44,8 +44,6 @@ _SYSTEM_PROMPT = textwrap.dedent("""
 
 class GeminiOrchestrator:
     """Interfaces with Google Gemini AI to orchestrate trading decisions."""
-
-    api_key = GEMINI_API_KEY and GEMINI_API_KEY2
     
     def __init__(self, config: AppConfig) -> None:
         self.cfg = config

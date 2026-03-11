@@ -4,10 +4,11 @@ A fully automated, production-grade perpetuals trading system built on **GitHub 
 
 - 🔗 **[Hyperliquid](https://hyperliquid.xyz)** – decentralised perpetuals exchange for data fetching and live execution
 - 🤖 **ML Ensemble** – LSTM, XGBoost, Gradient Boosting, and Random Forest models for signal generation
-- 🧠 **[Gemini AI](https://ai.google.dev)** – orchestration, market regime detection, leverage recommendation, and performance review
+- 🧠 **Gemini / Groq / OpenRouter AI** – orchestration, market regime detection, leverage recommendation, and performance review
 - 📄 **Paper Broker** – realistic simulation with fees, funding rates, slippage, and liquidations
 - ⚡ **Live Trader Commander** – isolated-margin trade execution on Hyperliquid with safety guards
 - 📊 **Evaluator** – comprehensive metrics (Sharpe, Sortino, Calmar, win rate, profit factor) with auto-adjustments
+- 🗂️ **Dataset Cache** – OHLCV history saved as safetensors/npz with SQLite metadata
 
 ---
 
@@ -23,7 +24,7 @@ A fully automated, production-grade perpetuals trading system built on **GitHub 
 │  └──────┬───────┘  └──────┬───────┘  └──────────┬────────────┘  │
 │         │                 │                     │               │
 │  ┌──────▼─────────────────▼─────────────────────▼────────────┐  │
-│  │                Gemini AI Orchestrator                      │  │
+│  │            Multi-AI Orchestrator (Gemini/Groq/OpenRouter)   │  │
 │  │   • Validates ML signals    • Recommends leverage (10–35x) │  │
 │  │   • Detects market regime   • Reviews performance          │  │
 │  └─────────────────────────┬──────────────────────────────────┘  │
@@ -65,10 +66,12 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 | `trading.leverage.min` | `10` | Minimum leverage |
 | `trading.leverage.max` | `35` | Maximum leverage |
 | `trading.leverage.default` | `15` | Starting leverage |
-| `trading.markets` | BTC, ETH, SOL, ARB | Symbols to trade (isolated margin) |
+| `trading.markets` | BTC, ETH, SOL, ARB, ZRO, AAVE, ADA, CATI | Symbols to trade (isolated margin) |
 | `trading.risk.max_drawdown_pct` | `0.20` | 20% max drawdown before halt |
 | `ml.signals.long_threshold` | `0.60` | P(long) to enter |
 | `gemini.model` | `gemini-1.5-pro` | Gemini model for orchestration |
+| `groq.model` | `llama3-70b-8192` | Groq model for orchestration |
+| `openrouter.model` | `openai/gpt-4o-mini` | OpenRouter model for orchestration |
 
 ---
 
@@ -79,6 +82,8 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 | Secret | Required For | Description |
 |---|---|---|
 | `GEMINI_API_KEY` | All modes | Google Gemini AI API key |
+| `GROQ_API_KEY` | Optional | Groq API key (OpenAI-compatible) |
+| `OPENROUTER_API_KEY` | Optional | OpenRouter API key (OpenAI-compatible) |
 | `HYPERLIQUID_PRIVATE_KEY` | Live trading | Ethereum private key for signing orders |
 | `HYPERLIQUID_WALLET_ADDRESS` | Live trading | Wallet address |
 
@@ -123,7 +128,9 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 │   ├── config.py                   # Configuration management
 │   ├── data_fetcher.py             # Hyperliquid data fetching
 │   ├── ml_models.py                # ML ensemble (LSTM, XGBoost, GB, RF)
+│   ├── ai_orchestrator.py          # Multi-provider AI orchestration
 │   ├── gemini_orchestrator.py      # Gemini AI orchestration
+│   ├── dataset_manager.py          # Dataset caching and safetensors storage
 │   ├── paper_broker.py             # Paper trading simulator
 │   ├── live_trader.py              # Live trading commander
 │   ├── risk_manager.py             # Risk & leverage management
@@ -150,6 +157,9 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 ```bash
 # Install dependencies
 pip install -r requirements.txt
+
+# Optional: enable safetensors dataset storage
+pip install "safetensors>=0.4.2,<1.0"
 
 # Run tests
 pytest tests/ -v

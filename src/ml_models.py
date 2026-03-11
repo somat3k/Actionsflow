@@ -251,6 +251,62 @@ class QuantumEnsemble:
         log.info("Ensemble training complete. Scores: %s", scores)
         return scores
 
+    def train_with_progression(
+        self,
+        df: pd.DataFrame,
+        symbol: str,
+        epochs: int,
+        reinforcement_alpha: float,
+    ) -> List[Dict[str, Any]]:
+        """Train the ensemble over progressive epochs with reinforcement updates."""
+        total_rows = len(df)
+        if total_rows <= 0:
+            return []
+        epochs = max(1, epochs)
+        epoch_results: List[Dict[str, Any]] = []
+        for epoch in range(1, epochs + 1):
+            fraction = epoch / epochs
+            window = max(1, int(total_rows * fraction))
+            epoch_df = df.tail(window)
+            scores = self.train(epoch_df, symbol=symbol)
+            weights = self.apply_reinforcement(scores, reinforcement_alpha)
+            self._save(symbol)
+            epoch_results.append(
+                {
+                    "epoch": epoch,
+                    "rows": len(epoch_df),
+                    "scores": scores,
+                    "weights": weights,
+                }
+            )
+        return epoch_results
+
+    def apply_reinforcement(
+        self, scores: Dict[str, float], alpha: float
+    ) -> Dict[str, float]:
+        """Update model weights using reward scores (reinforcement-style)."""
+        valid_scores = {
+            key: float(score)
+            for key, score in scores.items()
+            if isinstance(score, (int, float))
+        }
+        total_score = sum(valid_scores.values())
+        if total_score <= 0 or not valid_scores:
+            return dict(self._model_weights)
+        alpha = max(0.0, min(alpha, 1.0))
+        for model, score in valid_scores.items():
+            if model not in self._model_weights:
+                continue
+            target_weight = score / total_score
+            self._model_weights[model] = (
+                (1 - alpha) * self._model_weights[model] + alpha * target_weight
+            )
+        total_weight = sum(self._model_weights.values())
+        if total_weight > 0:
+            for key in self._model_weights:
+                self._model_weights[key] /= total_weight
+        return dict(self._model_weights)
+
     # ── Inference ──────────────────────────────────────────────────────────────
 
     def predict(self, df: pd.DataFrame) -> Dict[str, Any]:
@@ -360,6 +416,8 @@ class QuantumEnsemble:
         joblib.dump(self.scaler, prefix / "scaler.pkl")
         with open(prefix / "feature_cols.json", "w") as fh:
             json.dump(self.feature_cols, fh)
+        with open(prefix / "weights.json", "w") as fh:
+            json.dump(self._model_weights, fh)
         if self.xgb_model and _XGB_AVAILABLE:
             self.xgb_model.get_booster().save_model(str(prefix / "xgb.json"))
         if self.gb_model:
@@ -380,6 +438,18 @@ class QuantumEnsemble:
         self.scaler = joblib.load(scaler_path)
         with open(prefix / "feature_cols.json") as fh:
             self.feature_cols = json.load(fh)
+        weights_path = prefix / "weights.json"
+        if weights_path.exists():
+            with open(weights_path) as fh:
+                weights = json.load(fh)
+            if isinstance(weights, dict):
+                self._model_weights.update(
+                    {
+                        k: float(v)
+                        for k, v in weights.items()
+                        if isinstance(v, (int, float))
+                    }
+                )
         xgb_path = prefix / "xgb.json"
         if xgb_path.exists() and _XGB_AVAILABLE:
             import xgboost as xgb

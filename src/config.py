@@ -74,6 +74,9 @@ class DataConfig:
     secondary_interval: str = "1h"
     macro_interval: str = "4h"
     lookback_candles: int = 500
+    training_lookback_candles: int = 2000
+    dataset_dir: str = "datasets"
+    dataset_format: str = "safetensors"
 
 
 @dataclass
@@ -84,12 +87,32 @@ class MLConfig:
     min_ensemble_agreement: float = 0.60
     model_save_dir: str = "models"
     retrain_interval_hours: int = 24
+    training_epochs: int = 1
+    reinforcement_alpha: float = 0.1
 
 
 @dataclass
 class GeminiConfig:
     api_key: str = ""
     model: str = "gemini-1.5-pro"
+    temperature: float = 0.1
+    max_output_tokens: int = 2048
+
+
+@dataclass
+class GroqConfig:
+    api_key: str = ""
+    model: str = "llama3-70b-8192"
+    api_url: str = "https://api.groq.com/openai/v1/chat/completions"
+    temperature: float = 0.1
+    max_output_tokens: int = 2048
+
+
+@dataclass
+class OpenRouterConfig:
+    api_key: str = ""
+    model: str = "openai/gpt-4o-mini"
+    api_url: str = "https://openrouter.ai/api/v1/chat/completions"
     temperature: float = 0.1
     max_output_tokens: int = 2048
 
@@ -131,6 +154,8 @@ class AppConfig:
     data: DataConfig = field(default_factory=DataConfig)
     ml: MLConfig = field(default_factory=MLConfig)
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
+    groq: GroqConfig = field(default_factory=GroqConfig)
+    openrouter: OpenRouterConfig = field(default_factory=OpenRouterConfig)
     paper_broker: PaperBrokerConfig = field(default_factory=PaperBrokerConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
 
@@ -158,6 +183,8 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     data_raw = raw.get("data", {})
     ml_raw = raw.get("ml", {})
     gemini_raw = raw.get("gemini", {})
+    groq_raw = raw.get("groq", {})
+    openrouter_raw = raw.get("openrouter", {})
     paper_raw = raw.get("paper_broker", {})
     eval_raw = raw.get("evaluation", {})
 
@@ -219,6 +246,13 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     # ── Data ──────────────────────────────────────────────────
     intervals = data_raw.get("intervals", {})
     lookback = data_raw.get("lookback", {})
+    dataset_raw = data_raw.get("dataset", {})
+    training_lookback_env = os.environ.get("LOOKBACK_CANDLES")
+    training_lookback = (
+        int(training_lookback_env)
+        if training_lookback_env
+        else int(lookback.get("training_candles", lookback.get("candles", 500)))
+    )
     data = DataConfig(
         hyperliquid_api_url=os.environ.get(
             "HYPERLIQUID_API_URL",
@@ -229,6 +263,9 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         secondary_interval=os.environ.get("SECONDARY_INTERVAL", intervals.get("secondary", "1h")),
         macro_interval=os.environ.get("MACRO_INTERVAL", intervals.get("macro", "4h")),
         lookback_candles=int(lookback.get("candles", 500)),
+        training_lookback_candles=training_lookback,
+        dataset_dir=os.environ.get("DATASET_DIR", dataset_raw.get("dir", "datasets")),
+        dataset_format=os.environ.get("DATASET_FORMAT", dataset_raw.get("format", "safetensors")),
     )
 
     # ── ML ────────────────────────────────────────────────────
@@ -241,6 +278,10 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         min_ensemble_agreement=float(signals.get("min_ensemble_agreement", 0.60)),
         model_save_dir=training.get("model_save_dir", "models"),
         retrain_interval_hours=int(training.get("retrain_interval_hours", 24)),
+        training_epochs=int(os.environ.get("TRAINING_EPOCHS", training.get("epochs", 1))),
+        reinforcement_alpha=float(
+            os.environ.get("REINFORCEMENT_ALPHA", training.get("reinforcement_alpha", 0.1))
+        ),
     )
 
     # ── Gemini ────────────────────────────────────────────────
@@ -249,6 +290,34 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         model=gemini_raw.get("model", "gemini-1.5-pro"),
         temperature=float(gemini_raw.get("temperature", 0.1)),
         max_output_tokens=int(gemini_raw.get("max_output_tokens", 2048)),
+    )
+
+    groq = GroqConfig(
+        api_key=os.environ.get("GROQ_API_KEY", ""),
+        model=os.environ.get("GROQ_MODEL", groq_raw.get("model", "llama3-70b-8192")),
+        api_url=os.environ.get(
+            "GROQ_API_URL",
+            groq_raw.get("api_url", "https://api.groq.com/openai/v1/chat/completions"),
+        ),
+        temperature=float(os.environ.get("GROQ_TEMPERATURE", groq_raw.get("temperature", 0.1))),
+        max_output_tokens=int(
+            os.environ.get("GROQ_MAX_TOKENS", groq_raw.get("max_output_tokens", 2048))
+        ),
+    )
+
+    openrouter = OpenRouterConfig(
+        api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+        model=os.environ.get("OPENROUTER_MODEL", openrouter_raw.get("model", "openai/gpt-4o-mini")),
+        api_url=os.environ.get(
+            "OPENROUTER_API_URL",
+            openrouter_raw.get("api_url", "https://openrouter.ai/api/v1/chat/completions"),
+        ),
+        temperature=float(
+            os.environ.get("OPENROUTER_TEMPERATURE", openrouter_raw.get("temperature", 0.1))
+        ),
+        max_output_tokens=int(
+            os.environ.get("OPENROUTER_MAX_TOKENS", openrouter_raw.get("max_output_tokens", 2048))
+        ),
     )
 
     # ── Paper broker ──────────────────────────────────────────
@@ -291,6 +360,8 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         data=data,
         ml=ml,
         gemini=gemini,
+        groq=groq,
+        openrouter=openrouter,
         paper_broker=paper_broker,
         evaluation=evaluation,
     )

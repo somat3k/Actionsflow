@@ -23,14 +23,26 @@ trading:
   markets:
     - symbol: "BTC"
       enabled: true
-      weight: 0.40
+      weight: 0.20
     - symbol: "ETH"
       enabled: true
-      weight: 0.30
+      weight: 0.18
     - symbol: "SOL"
       enabled: true
-      weight: 0.20
+      weight: 0.14
     - symbol: "ARB"
+      enabled: true
+      weight: 0.08
+    - symbol: "ZRO"
+      enabled: true
+      weight: 0.10
+    - symbol: "AAVE"
+      enabled: true
+      weight: 0.10
+    - symbol: "ADA"
+      enabled: true
+      weight: 0.10
+    - symbol: "CATI"
       enabled: true
       weight: 0.10
 
@@ -61,7 +73,7 @@ trading:
   risk:
     max_drawdown_pct: 0.20            # 20% max drawdown before halting
     daily_loss_limit_pct: 0.05        # 5% daily loss limit
-    max_open_positions: 4
+    max_open_positions: 8
     stop_loss_atr_multiplier: 2.0
     take_profit_atr_multiplier: 3.0
     trailing_stop_pct: 0.015          # 1.5% trailing stop
@@ -80,8 +92,13 @@ data:
   # Lookback periods for feature engineering
   lookback:
     candles: 500                      # Number of candles for features
+    training_candles: 2000            # Higher-range training history
     funding_periods: 48               # Funding rate history
     trade_depth: 20                   # Order book levels
+
+  dataset:
+    dir: "datasets"
+    format: "safetensors"
 
   # Cache settings
   cache:
@@ -177,6 +194,8 @@ ml:
     test_split: 0.15
     early_stopping_patience: 15
     model_save_dir: "models"
+    epochs: 3
+    reinforcement_alpha: 0.15
     retrain_interval_hours: 24        # Retrain every 24 hours
 
 # ── Gemini AI Orchestrator ────────────────────────────────────
@@ -196,6 +215,16 @@ gemini:
     risk_advisor: true               # Evaluate risk before each trade
     performance_reviewer: true       # Review and suggest adjustments
     leverage_adjuster: true          # Recommend leverage changes
+
+groq:
+  model: "llama3-70b-8192"
+  temperature: 0.1
+  max_output_tokens: 2048
+
+openrouter:
+  model: "openai/gpt-4o-mini"
+  temperature: 0.1
+  max_output_tokens: 2048
 
 # ── Paper Broker ─────────────────────────────────────────────
 paper_broker:

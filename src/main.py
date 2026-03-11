@@ -26,7 +26,8 @@ from src.config import AppConfig, load_config
 from src.data_fetcher import HyperliquidDataFetcher
 from src.database_manager import DatabaseManager
 from src.evaluator import Evaluator, compute_metrics
-from src.gemini_orchestrator import GeminiOrchestrator
+from src.ai_orchestrator import MultiAIOrchestrator
+from src.dataset_manager import DatasetManager
 from src.live_trader import LiveTrader
 from src.paper_broker import PaperBroker
 from src.risk_manager import PositionRequest, RiskManager
@@ -96,6 +97,17 @@ def _record_training_time(db: DatabaseManager, symbols: List[str]) -> None:
     db.set_cache("training:last_run", last_runs)
 
 
+def _resolve_training_markets(cfg: AppConfig) -> List[Any]:
+    """Filter training markets based on TRAINING_SYMBOLS env var if provided."""
+    raw = os.environ.get("TRAINING_SYMBOLS")
+    if not raw:
+        return cfg.trading.markets
+    allowed = {sym.strip().upper() for sym in raw.split(",") if sym.strip()}
+    if not allowed:
+        return cfg.trading.markets
+    return [market for market in cfg.trading.markets if market.symbol.upper() in allowed]
+
+
 def _ensure_model_ready(
     cfg: AppConfig,
     db: DatabaseManager,
@@ -149,31 +161,60 @@ def run_training(config_path: Optional[Path] = None) -> int:
 
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
+    dataset_mgr = DatasetManager(cfg, db)
+    training_epochs = max(1, cfg.ml.training_epochs)
+    reinforcement_alpha = cfg.ml.reinforcement_alpha
+    force_refresh = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
 
     results: Dict[str, Any] = {}
-    for market in cfg.trading.markets:
+    epoch_scores: Dict[str, Any] = {}
+    for market in _resolve_training_markets(cfg):
         if not market.enabled:
             continue
         symbol = market.symbol
         log.info("Fetching training data for %s …", symbol)
-        df = fetcher.fetch_candles(
+        df = dataset_mgr.get_or_fetch_dataset(
+            fetcher,
             symbol,
             cfg.data.primary_interval,
-            lookback_candles=cfg.data.lookback_candles,
+            lookback_candles=cfg.data.training_lookback_candles,
+            force_refresh=force_refresh,
         )
         if df.empty:
             log.warning("No data for %s – skipping training", symbol)
             continue
 
-        scores = ensemble.train(df, symbol=symbol)
-        results[symbol] = scores
+        if training_epochs > 1:
+            epochs = ensemble.train_with_progression(
+                df,
+                symbol=symbol,
+                epochs=training_epochs,
+                reinforcement_alpha=reinforcement_alpha,
+            )
+            if not epochs:
+                continue
+            epoch_scores[symbol] = epochs
+            results[symbol] = epochs[-1]["scores"]
+        else:
+            scores = ensemble.train(df, symbol=symbol)
+            results[symbol] = scores
 
     output_path = Path(cfg.system.results_dir) / "training_scores.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as fh:
         json.dump(results, fh, indent=2)
 
-    summary = "## 🤖 Model Training Results\n\n| Symbol | XGB | GB | RF | LSTM |\n|---|---|---|---|---|\n"
+    if epoch_scores:
+        epoch_path = Path(cfg.system.results_dir) / "training_epoch_scores.json"
+        with open(epoch_path, "w") as fh:
+            json.dump(epoch_scores, fh, indent=2)
+
+    summary = (
+        "## 🤖 Model Training Results\n\n"
+        f"- **Epochs:** {training_epochs}\n"
+        f"- **Reinforcement Alpha:** {reinforcement_alpha:.2f}\n\n"
+        "| Symbol | XGB | GB | RF | LSTM |\n|---|---|---|---|---|\n"
+    )
     for sym, scores in results.items():
         def _fmt(key: str) -> str:
             v = scores.get(key)
@@ -182,6 +223,8 @@ def run_training(config_path: Optional[Path] = None) -> int:
         summary += row
     _print_github_summary(summary)
     db.set_cache("training:last_scores", results)
+    if epoch_scores:
+        db.set_cache("training:epoch_scores", epoch_scores)
     if results:
         _record_training_time(db, list(results.keys()))
     db.record_task_completion(
@@ -206,7 +249,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
 
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
-    gemini = GeminiOrchestrator(cfg)
+    gemini = MultiAIOrchestrator(cfg)
     risk_mgr = RiskManager(cfg)
     state_dir = Path(cfg.system.state_dir)
 
@@ -373,7 +416,7 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
 
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
-    gemini = GeminiOrchestrator(cfg)
+    gemini = MultiAIOrchestrator(cfg)
     risk_mgr = RiskManager(cfg)
     live_trader = LiveTrader(cfg, private_key=private_key)
 
@@ -518,7 +561,7 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
     )
 
     # Gemini performance review
-    gemini = GeminiOrchestrator(cfg)
+    gemini = MultiAIOrchestrator(cfg)
     perf_review = gemini.review_performance(trade_history[-20:], asdict(metrics))
     if perf_review.get("pause_trading"):
         log.warning("⚠️  Gemini recommends pausing trading: %s", perf_review.get("pause_reason"))
