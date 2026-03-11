@@ -85,8 +85,7 @@ class BridgeState:
             }
 
         ml_signal = self.ensemble.predict(features)
-        close_source = features if "close" in features.columns else df
-        last_close = float(close_source["close"].iloc[-1])
+        last_close = float(features["close"].iloc[-1])
         # External platform payloads typically omit funding/order-book microstructure,
         # so default these fields to zero unless the caller supplies richer data.
         market_snapshot = {

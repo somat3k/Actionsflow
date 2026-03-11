@@ -44,7 +44,7 @@ string BuildPayload()
 
 string BuildCandlesJson()
 {
-    int max_bars = MathMin(HistoryBars, Bars - 1);
+    int max_bars = MathMin(HistoryBars, Bars);
     string body = "[";
     for (int i = max_bars - 1; i >= 0; i--)
     {
