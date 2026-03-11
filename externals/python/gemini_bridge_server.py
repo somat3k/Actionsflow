@@ -84,6 +84,8 @@ class BridgeState:
 
         ml_signal = self.ensemble.predict(features)
         last_close = float(features["close"].iloc[-1])
+        # External platform payloads typically omit funding/order-book microstructure,
+        # so default these fields to zero unless the caller supplies richer data.
         market_snapshot = {
             "funding": {"mark_price": last_close, "funding_rate": 0.0, "open_interest": 0.0},
             "order_book": {"order_book_imbalance": 0.0, "bid_ask_spread_bps": 0.0},
