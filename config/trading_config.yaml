@@ -23,14 +23,29 @@ trading:
   markets:
     - symbol: "BTC"
       enabled: true
-      weight: 0.40
+      weight: 0.20
     - symbol: "ETH"
       enabled: true
-      weight: 0.30
+      weight: 0.15
     - symbol: "SOL"
       enabled: true
-      weight: 0.20
+      weight: 0.10
     - symbol: "ARB"
+      enabled: true
+      weight: 0.05
+    - symbol: "ZRO"
+      enabled: true
+      weight: 0.10
+    - symbol: "AAVE"
+      enabled: true
+      weight: 0.10
+    - symbol: "FLOKI"
+      enabled: true
+      weight: 0.10
+    - symbol: "SHIB"
+      enabled: true
+      weight: 0.10
+    - symbol: "XAUT"
       enabled: true
       weight: 0.10
 
@@ -61,7 +76,7 @@ trading:
   risk:
     max_drawdown_pct: 0.20            # 20% max drawdown before halting
     daily_loss_limit_pct: 0.05        # 5% daily loss limit
-    max_open_positions: 4
+    max_open_positions: 9
     stop_loss_atr_multiplier: 2.0
     take_profit_atr_multiplier: 3.0
     trailing_stop_pct: 0.015          # 1.5% trailing stop
@@ -71,11 +86,13 @@ data:
   hyperliquid_api_url: "https://api.hyperliquid.xyz/info"
   hyperliquid_ws_url: "wss://api.hyperliquid.xyz/ws"
 
-  # Candle intervals to fetch
+  # Candle intervals to fetch (multiplex timeframes for high-freq analysis)
   intervals:
     primary: "1m"                     # Primary trading timeframe
-    secondary: "5m"                   # Higher timeframe for trend
+    secondary: "5m"                   # Short-term confirmation
     macro: "15m"                      # Macro context
+    hourly: "1h"                      # Hourly trend context
+    daily: "1d"                       # Daily regime context
 
   # Lookback periods for feature engineering
   lookback:
@@ -94,7 +111,7 @@ ml:
   models:
     lstm:
       enabled: true
-      weight: 0.35
+      weight: 0.25
       sequence_length: 60
       units: [128, 64, 32]
       dropout: 0.2
@@ -104,7 +121,7 @@ ml:
 
     xgboost:
       enabled: true
-      weight: 0.35
+      weight: 0.30
       n_estimators: 500
       max_depth: 6
       learning_rate: 0.05
@@ -114,16 +131,22 @@ ml:
 
     gradient_boost:
       enabled: true
-      weight: 0.15
+      weight: 0.10
       n_estimators: 200
       max_depth: 5
       learning_rate: 0.05
 
     random_forest:
       enabled: true
-      weight: 0.15
+      weight: 0.20
       n_estimators: 200
       max_depth: 10
+
+    linear:
+      enabled: true
+      weight: 0.15
+      C: 1.0
+      max_iter: 1000
 
   # Feature engineering
   features:
@@ -181,7 +204,8 @@ ml:
 
 # ── Gemini AI Orchestrator ────────────────────────────────────
 gemini:
-  model: "gemini-1.5-pro"
+  model: "gemini-2.0-flash"
+  model_2: "gemini-2.5-pro"
   temperature: 0.1                    # Low temperature for consistent decisions
   max_output_tokens: 2048
   safety_settings: strict
@@ -227,6 +251,11 @@ evaluation:
     - avg_trade_duration_hours
     - trades_per_day
     - avg_leverage_used
+    - accuracy
+    - equity_growth_pct
+    - num_positions
+    - gemini_answer_time_avg_s
+    - action_time_avg_s
 
   thresholds:
     min_sharpe: 1.0
