@@ -17,9 +17,10 @@ def test_reinforcement_updates_model_weights(tmp_path, monkeypatch):
     alpha = 0.5
     updated_xgb = (1 - alpha) * before["xgb"] + alpha * 0.9
     updated_gb = (1 - alpha) * before["gb"] + alpha * 0.1
-    expected_total = (
-        sum(before.values()) - before["xgb"] - before["gb"] + updated_xgb + updated_gb
+    unchanged_total = sum(
+        weight for name, weight in before.items() if name not in {"xgb", "gb"}
     )
+    expected_total = updated_xgb + updated_gb + unchanged_total
     expected_xgb = updated_xgb / expected_total
     expected_gb = updated_gb / expected_total
 
