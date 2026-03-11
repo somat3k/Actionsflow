@@ -20,7 +20,7 @@ from src.utils import add_all_features
 
 try:
     from src.gemini_orchestrator import GeminiOrchestrator
-except Exception as exc:  # noqa: BLE001
+except (ImportError, NameError) as exc:
     GeminiOrchestrator = None
     GEMINI_IMPORT_ERROR = exc
 else:
@@ -147,7 +147,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not found")
             return
         content_length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(content_length or 0).decode("utf-8")
+        raw = self.rfile.read(content_length).decode("utf-8")
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
@@ -158,8 +158,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         status = 200 if response.get("status") in {"ok", "model_unavailable"} else 400
         self._send_json(response, status=status)
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
-        log.info("%s - %s", self.address_string(), format % args)
+    def log_message(self, format_string: str, *args: Any) -> None:
+        log.info("%s - %s", self.address_string(), format_string % args)
 
     def _send_json(self, payload: Dict[str, Any], status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
