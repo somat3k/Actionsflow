@@ -112,6 +112,7 @@ Signal mapping:
 Notes:
 - `market_snapshot` and `recent_trades` are optional. When omitted, the bridge defaults to
   zero microstructure values and empty performance metrics.
+- Set `reset_daily: true` to reset the risk manager daily tracking when you start a new session.
 - `position` is only populated when the final signal is `1` or `2`. It uses the same
   RiskManager logic as the core project.
 

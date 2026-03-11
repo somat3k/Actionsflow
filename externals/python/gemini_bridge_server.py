@@ -104,11 +104,12 @@ class BridgeState:
         account = account_payload if isinstance(account_payload, dict) else {}
         positions = positions_payload if isinstance(positions_payload, dict) else {}
         equity = self._coerce_float(account.get("equity"), self.cfg.trading.initial_equity)
-        balance = self._coerce_float(account.get("balance"), equity)
+        balance = self._coerce_float(account.get("balance"), self.cfg.trading.initial_equity)
         default_leverage = self.cfg.trading.leverage.default or self.cfg.trading.leverage.min
         current_leverage = int(self._coerce_float(account.get("leverage"), default_leverage))
         open_positions = int(positions.get("long", 0)) + int(positions.get("short", 0))
-        self.risk_mgr.reset_daily_tracking(equity)
+        if payload.get("reset_daily"):
+            self.risk_mgr.reset_daily_tracking(equity)
 
         recent_trades = payload.get("recent_trades", [])
         if not isinstance(recent_trades, list):
@@ -210,7 +211,7 @@ class BridgeState:
         ml_confidence: float,
         regime: str,
         current_leverage: int,
-        perf: Any,
+        perf: PerformanceMetrics,
     ) -> Dict[str, Any]:
         perf_payload = asdict(perf) if isinstance(perf, PerformanceMetrics) else {}
         if self.gemini:
