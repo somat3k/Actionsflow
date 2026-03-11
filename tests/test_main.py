@@ -207,6 +207,9 @@ def test_full_cycle_skips_live_trading_when_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr("src.main.run_model_export", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr("src.main._resolve_trading_eligibility", lambda _db: (True, "ok"))
     monkeypatch.setattr("src.main._is_live_trading_enabled", lambda: False)
-    monkeypatch.setattr("src.main.run_live_signal", lambda *_args, **_kwargs: pytest.fail("live trading ran"))
+    def _fail_live_signal(*_args, **_kwargs):
+        pytest.fail("live trading ran")
+
+    monkeypatch.setattr("src.main.run_live_signal", _fail_live_signal)
 
     assert run_full_cycle() == 0

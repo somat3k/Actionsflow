@@ -46,6 +46,11 @@ def parse_snapshot_end_ms(
     raw: Optional[str],
     logger: Optional[logging.Logger] = None,
 ) -> Optional[int]:
+    """Parse DATA_SNAPSHOT_END_MS into an integer timestamp.
+
+    Returns None when the value is missing or invalid. When a logger is
+    provided, invalid values emit a warning before returning None.
+    """
     if not raw:
         return None
     try:

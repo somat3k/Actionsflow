@@ -68,6 +68,7 @@ def _get_hyperliquid_private_key() -> Optional[str]:
 
 
 def _ensure_data_snapshot_end_ms() -> int:
+    """Ensure DATA_SNAPSHOT_END_MS is set and return the snapshot time."""
     raw = os.environ.get("DATA_SNAPSHOT_END_MS")
     parsed = parse_snapshot_end_ms(raw, logger=log)
     if parsed is not None:
@@ -78,10 +79,12 @@ def _ensure_data_snapshot_end_ms() -> int:
 
 
 def _is_live_trading_enabled() -> bool:
+    """Return True when LIVE_TRADING_ENABLED explicitly enables live orders."""
     return os.environ.get("LIVE_TRADING_ENABLED", "false").lower() == "true"
 
 
 def _resolve_trading_eligibility(db: DatabaseManager) -> tuple[bool, str]:
+    """Return trading eligibility, honoring overrides before cached evaluation."""
     override = os.environ.get("TRADING_ELIGIBILITY_OVERRIDE", "").lower() == "true"
     if override:
         return True, "TRADING_ELIGIBILITY_OVERRIDE enabled"
