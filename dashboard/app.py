@@ -295,6 +295,10 @@ def _load_gemini_profile(
     return _load_gemini_model(profile.get("api_key", ""), profile.get("model", "")), selected
 
 
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 cfg = load_config()
 db = _load_db(cfg.system.state_dir, cfg.system.database_file)
 
@@ -302,7 +306,8 @@ st.set_page_config(page_title="Quantum Trader Dashboard", layout="wide")
 st.markdown(
     """
 <style>
-html, body, [class*="css"] { font-size: 0.85rem; }
+div[data-testid="stAppViewContainer"] { font-size: 0.85rem; }
+div[data-testid="stAppViewContainer"] p { font-size: 0.85rem; }
 .frame-title { font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #6c757d; }
 .muted { color: #6c757d; }
 div[data-testid="stMetric"] label { font-size: 0.7rem; color: #6c757d; }
@@ -416,7 +421,7 @@ with control_col:
             db,
             "dashboard:override_history",
             {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": _utc_timestamp(),
                 "overrides": updated_values,
             },
         )
@@ -435,7 +440,7 @@ with control_col:
         st.cache_data.clear()
         db.set_cache(
             "dashboard:model_reload_requested",
-            {"requested_at": datetime.now(timezone.utc).isoformat()},
+            {"requested_at": _utc_timestamp()},
         )
         st.toast("Reload request recorded.")
     if not model_scores.empty:
@@ -589,7 +594,7 @@ with chat_col:
                 db,
                 "dashboard:override_history",
                 {
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": _utc_timestamp(),
                     "overrides": {adjustment["key"]: adjustment["value"]},
                 },
             )
@@ -601,7 +606,7 @@ with chat_col:
             }
             response_text = tool_result["summary"]
         elif trade_request:
-            trade_request["requested_at"] = datetime.now(timezone.utc).isoformat()
+            trade_request["requested_at"] = _utc_timestamp()
             trade_requests = _append_cache_list(db, "dashboard:trade_requests", trade_request)
             tool_result = {
                 "summary": f"Trade request staged: {trade_request['side']} {trade_request['symbol']}",

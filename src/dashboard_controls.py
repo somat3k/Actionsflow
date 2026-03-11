@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Any, Dict, Iterable, Optional, Sequence
+from typing import Any, Dict, Iterable, Optional, Sequence, Union
 
 
 @dataclass(frozen=True)
@@ -159,7 +159,7 @@ def _coerce_adjustment_value(
     raw_value: float,
     spec: AdjustmentSpec,
     has_percent: bool,
-) -> float | int:
+) -> Union[float, int]:
     value = raw_value
     if spec.value_type == "ratio" and has_percent:
         value = value / 100
