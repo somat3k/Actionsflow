@@ -635,7 +635,9 @@ with chat_col:
         }
         st.session_state.chat_messages.append(assistant_entry)
         if tool_result and _wants_canvas(user_prompt):
-            st.session_state.canvas_payload = tool_result
+            canvas_df = tool_result.get("df")
+            if canvas_df is not None and not getattr(canvas_df, "empty", True):
+                st.session_state.canvas_payload = tool_result
         with st.chat_message("assistant"):
             st.markdown(response_text)
             _render_chat_tool_result(tool_result)

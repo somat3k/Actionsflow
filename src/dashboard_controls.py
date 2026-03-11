@@ -105,7 +105,7 @@ def parse_adjustment_request(text: str) -> Optional[Dict[str, Any]]:
         return None
     raw_value = float(match.group(1))
     raw_segment = match.group(0)
-    has_percent = "%" in raw_segment
+    has_percent = "%" in raw_segment or "percent" in normalized or "pct" in normalized
     for spec in ADJUSTMENT_SPECS:
         if any(pattern in normalized for pattern in spec.patterns):
             value = _coerce_adjustment_value(raw_value, spec, has_percent)
@@ -146,8 +146,9 @@ def parse_trade_request(
 def _find_symbol(text: str, symbols: Iterable[str]) -> Optional[str]:
     upper_text = text.upper()
     for symbol in symbols:
-        if symbol.upper() in upper_text:
-            return symbol.upper()
+        upper_symbol = symbol.upper()
+        if upper_symbol in upper_text:
+            return upper_symbol
     match = re.search(r"\b([A-Z]{2,6})\b", upper_text)
     if match:
         return match.group(1)
@@ -160,7 +161,7 @@ def _coerce_adjustment_value(
     has_percent: bool,
 ) -> float | int:
     value = raw_value
-    if spec.value_type == "ratio" and (has_percent or value > 1):
+    if spec.value_type == "ratio" and has_percent:
         value = value / 100
     if spec.value_type == "int":
         value = int(round(value))
