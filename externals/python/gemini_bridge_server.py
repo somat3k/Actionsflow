@@ -53,13 +53,13 @@ class BridgeState:
             return {"status": "error", "message": "candles payload missing"}
 
         df = pd.DataFrame(candles)
-        required = {"open", "high", "low", "close", "volume"}
-        if not required.issubset(df.columns):
+        required_columns = {"open", "high", "low", "close", "volume"}
+        if not required_columns.issubset(df.columns):
             return {"status": "error", "message": "candles require OHLCV fields"}
 
-        for column in required:
+        for column in required_columns:
             df[column] = pd.to_numeric(df[column], errors="coerce")
-        df = df.dropna(subset=list(required))
+        df = df.dropna(subset=list(required_columns))
         if "time" in df.columns:
             df["time"] = pd.to_datetime(df["time"], utc=True, errors="coerce")
             df = df.dropna(subset=["time"]).sort_values("time")
@@ -68,11 +68,13 @@ class BridgeState:
             return {"status": "error", "message": "candles payload invalid"}
 
         if not self.ensure_models(symbol):
+            log.warning("No saved models found for symbol '%s'", symbol)
             return {
                 "status": "model_unavailable",
                 "symbol": symbol,
                 "signal": 0,
                 "confidence": 0.0,
+                "message": f"models not available for symbol '{symbol}'",
             }
 
         features = add_all_features(df)
