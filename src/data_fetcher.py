@@ -332,7 +332,10 @@ class HyperliquidDataFetcher:
             try:
                 return int(snapshot_raw)
             except ValueError:
-                log.warning("Invalid DATA_SNAPSHOT_END_MS=%s; using current time", snapshot_raw)
+                log.warning(
+                    "Invalid DATA_SNAPSHOT_END_MS=%s; falling back to current time",
+                    snapshot_raw,
+                )
         return utc_now_ms()
 
     def _fetch_candle_snapshot(

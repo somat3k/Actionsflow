@@ -79,6 +79,10 @@ def _ensure_data_snapshot_end_ms() -> int:
     return snapshot
 
 
+def _is_live_trading_enabled() -> bool:
+    return os.environ.get("LIVE_TRADING_ENABLED", "false").lower() == "true"
+
+
 def _resolve_trading_eligibility(db: DatabaseManager) -> tuple[bool, str]:
     override = os.environ.get("TRADING_ELIGIBILITY_OVERRIDE", "").lower() == "true"
     if override:
@@ -1056,7 +1060,7 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
     log.info("Data snapshot end time locked to %s", snapshot_end_ms)
 
     steps = [
-        ("train-models", run_training),
+        ("training", run_training),
         ("signal", run_paper_signal),
         ("evaluate", run_evaluation),
         ("export-models", run_model_export),
@@ -1091,12 +1095,8 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
         )
         return 0
 
-    if mode == "live" and os.environ.get("LIVE_TRADING_ENABLED", "false").lower() != "true":
-        if os.environ.get("FORCE_LIVE_TRADING", "").lower() == "true":
-            os.environ["LIVE_TRADING_ENABLED"] = "true"
-            log.warning("LIVE_TRADING_ENABLED forced on via FORCE_LIVE_TRADING")
-        else:
-            log.warning("LIVE_TRADING_ENABLED not set; live trades will be dry-run")
+    if mode == "live" and not _is_live_trading_enabled():
+        log.warning("LIVE_TRADING_ENABLED not set; live trades will be dry-run")
 
     if mode == "live":
         trade_rc = run_live_signal(config_path)
