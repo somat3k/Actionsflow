@@ -7,7 +7,13 @@ import pytest
 
 from src.config import load_config
 from src.database_manager import DatabaseManager
-from src.main import _get_hyperliquid_private_key, _resolve_trading_eligibility, main, run_paper_signal
+from src.main import (
+    _get_hyperliquid_private_key,
+    _resolve_trading_eligibility,
+    main,
+    run_full_cycle,
+    run_paper_signal,
+)
 from src.utils import utc_now
 
 TEST_RETRAIN_BUFFER_HOURS = 1
@@ -153,3 +159,54 @@ def test_resolve_trading_eligibility_override(tmp_path, monkeypatch):
     allowed, reason = _resolve_trading_eligibility(db)
     assert allowed
     assert "override" in reason.lower()
+
+
+def test_full_cycle_sequences_steps(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("LOG_LEVEL", "WARNING")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "results").mkdir()
+    (tmp_path / ".trading_state").mkdir()
+
+    calls = []
+
+    def _record(name):
+        def _runner(*_args, **_kwargs):
+            calls.append(name)
+            return 0
+        return _runner
+
+    cfg = load_config()
+    db_path = tmp_path / cfg.system.state_dir / cfg.system.database_file
+    monkeypatch.setattr("src.main._build_db_manager", lambda _cfg: DatabaseManager(db_path))
+    monkeypatch.setattr("src.main.run_training", _record("training"))
+    monkeypatch.setattr("src.main.run_paper_signal", _record("signal"))
+    monkeypatch.setattr("src.main.run_evaluation", _record("evaluate"))
+    monkeypatch.setattr("src.main.run_model_export", _record("export"))
+    monkeypatch.setattr("src.main._resolve_trading_eligibility", lambda _db: (True, "ok"))
+
+    assert run_full_cycle() == 0
+    assert calls == ["training", "signal", "evaluate", "export"]
+
+
+def test_full_cycle_skips_live_trading_when_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADING_MODE", "live")
+    monkeypatch.setenv("LOG_LEVEL", "WARNING")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "results").mkdir()
+    (tmp_path / ".trading_state").mkdir()
+
+    cfg = load_config()
+    db_path = tmp_path / cfg.system.state_dir / cfg.system.database_file
+    monkeypatch.setattr("src.main._build_db_manager", lambda _cfg: DatabaseManager(db_path))
+    monkeypatch.setattr("src.main.run_training", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr("src.main.run_paper_signal", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr("src.main.run_evaluation", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr("src.main.run_model_export", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr("src.main._resolve_trading_eligibility", lambda _db: (True, "ok"))
+    monkeypatch.setattr("src.main._is_live_trading_enabled", lambda: False)
+    monkeypatch.setattr("src.main.run_live_signal", lambda *_args, **_kwargs: pytest.fail("live trading ran"))
+
+    assert run_full_cycle() == 0

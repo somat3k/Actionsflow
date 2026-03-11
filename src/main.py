@@ -69,11 +69,9 @@ def _get_hyperliquid_private_key() -> Optional[str]:
 
 def _ensure_data_snapshot_end_ms() -> int:
     raw = os.environ.get("DATA_SNAPSHOT_END_MS")
-    parsed = parse_snapshot_end_ms(raw)
+    parsed = parse_snapshot_end_ms(raw, logger=log)
     if parsed is not None:
         return parsed
-    if raw:
-        log.warning("DATA_SNAPSHOT_END_MS is invalid (%s); resetting snapshot clock", raw)
     snapshot = utc_now_ms()
     os.environ["DATA_SNAPSHOT_END_MS"] = str(snapshot)
     return snapshot
@@ -997,7 +995,7 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
     ai_orchestrator = MultiAIOrchestrator(cfg)
     perf_review = ai_orchestrator.review_performance(trade_history[-20:], asdict(metrics))
     pause_trading = bool(perf_review.get("pause_trading"))
-    pause_reason = perf_review.get("pause_reason") if pause_trading else ""
+    pause_reason = perf_review.get("pause_reason", "")
     if pause_trading:
         log.warning("⚠️  Gemini recommends pausing trading: %s", pause_reason)
         _print_github_summary(

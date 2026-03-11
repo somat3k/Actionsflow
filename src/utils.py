@@ -42,12 +42,20 @@ def utc_now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def parse_snapshot_end_ms(raw: Optional[str]) -> Optional[int]:
+def parse_snapshot_end_ms(
+    raw: Optional[str],
+    logger: Optional[logging.Logger] = None,
+) -> Optional[int]:
     if not raw:
         return None
     try:
         return int(raw)
     except ValueError:
+        if logger:
+            logger.warning(
+                "Invalid DATA_SNAPSHOT_END_MS=%s; falling back to current time",
+                raw,
+            )
         return None
 
 
