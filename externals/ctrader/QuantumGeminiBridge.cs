@@ -149,10 +149,10 @@ namespace cAlgo.Robots
     public class PositionSnapshot
     {
         [JsonPropertyName("long")]
-        public double Long { get; set; }
+        public int Long { get; set; }
 
         [JsonPropertyName("short")]
-        public double Short { get; set; }
+        public int Short { get; set; }
     }
 
     public class BridgeResponse
