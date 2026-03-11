@@ -271,7 +271,15 @@ class QuantumEnsemble:
             epoch_df = df.tail(window)
             scores = self.train(epoch_df, symbol=symbol)
             weights = self.apply_reinforcement(scores, reinforcement_alpha)
-            self._save(symbol)
+            try:
+                self._save(symbol)
+            except Exception as exc:
+                log.warning(
+                    "Failed to save model artifacts for %s (epoch %d): %s",
+                    symbol,
+                    epoch,
+                    exc,
+                )
             epoch_results.append(
                 {
                     "epoch": epoch,

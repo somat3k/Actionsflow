@@ -60,7 +60,10 @@ class DatasetManager:
 
         df = fetcher.download_ohlcv_history(symbol, interval, lookback_candles=lookback)
         if df.empty:
-            log.warning("No OHLCV data returned for %s – dataset not updated", symbol)
+            log.warning(
+                "No OHLCV data returned for %s - check API availability or symbol listing",
+                symbol,
+            )
             return df
 
         path = self._build_dataset_path(symbol, interval, df)

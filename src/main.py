@@ -249,7 +249,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
 
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
-    gemini = MultiAIOrchestrator(cfg)
+    ai_orchestrator = MultiAIOrchestrator(cfg)
     risk_mgr = RiskManager(cfg)
     state_dir = Path(cfg.system.state_dir)
 
@@ -291,7 +291,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
 
         # Gemini validation
         current_leverage = cfg.trading.leverage.default
-        gemini_analysis = gemini.analyse_market_context(symbol, ml_signal, snapshot)
+        gemini_analysis = ai_orchestrator.analyse_market_context(symbol, ml_signal, snapshot)
         validated_signal = gemini_analysis.get("validated_signal", ml_signal["signal"])
         regime = gemini_analysis.get("regime", "unknown")
 
@@ -300,7 +300,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         perf_metrics = compute_metrics(
             recent_history, cfg.paper_broker.initial_equity, broker.equity
         )
-        lev_rec = gemini.recommend_leverage(
+        lev_rec = ai_orchestrator.recommend_leverage(
             symbol,
             ml_signal["confidence"],
             regime,
@@ -416,7 +416,7 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
 
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
-    gemini = MultiAIOrchestrator(cfg)
+    ai_orchestrator = MultiAIOrchestrator(cfg)
     risk_mgr = RiskManager(cfg)
     live_trader = LiveTrader(cfg, private_key=private_key)
 
@@ -445,7 +445,7 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
         atr = float(df.get("atr_14", df["close"] * 0.01).iloc[-1])
 
         ml_signal = ensemble.predict(df)
-        gemini_analysis = gemini.analyse_market_context(symbol, ml_signal, snapshot)
+        gemini_analysis = ai_orchestrator.analyse_market_context(symbol, ml_signal, snapshot)
         validated_signal = gemini_analysis.get("validated_signal", ml_signal["signal"])
         regime = gemini_analysis.get("regime", "unknown")
 
@@ -455,7 +455,7 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
             log.warning("Risk flags for %s: %s", symbol, risk_flags)
 
         perf = compute_metrics(trade_log[-50:], cfg.trading.initial_equity, cfg.trading.initial_equity)
-        lev_rec = gemini.recommend_leverage(
+        lev_rec = ai_orchestrator.recommend_leverage(
             symbol, ml_signal["confidence"], regime,
             cfg.trading.leverage.default, asdict(perf)
         )
@@ -561,8 +561,8 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
     )
 
     # Gemini performance review
-    gemini = MultiAIOrchestrator(cfg)
-    perf_review = gemini.review_performance(trade_history[-20:], asdict(metrics))
+    ai_orchestrator = MultiAIOrchestrator(cfg)
+    perf_review = ai_orchestrator.review_performance(trade_history[-20:], asdict(metrics))
     if perf_review.get("pause_trading"):
         log.warning("⚠️  Gemini recommends pausing trading: %s", perf_review.get("pause_reason"))
         _print_github_summary(
