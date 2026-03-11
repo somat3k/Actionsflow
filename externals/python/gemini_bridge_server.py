@@ -105,7 +105,8 @@ class BridgeState:
         positions = positions_payload if isinstance(positions_payload, dict) else {}
         equity = self._coerce_float(account.get("equity"), self.cfg.trading.initial_equity)
         balance = self._coerce_float(account.get("balance"), equity)
-        current_leverage = int(account.get("leverage", self.cfg.trading.leverage.default))
+        default_leverage = self.cfg.trading.leverage.default or self.cfg.trading.leverage.min
+        current_leverage = int(self._coerce_float(account.get("leverage"), default_leverage))
         open_positions = int(positions.get("long", 0)) + int(positions.get("short", 0))
         self.risk_mgr.reset_daily_tracking(equity)
 
@@ -124,7 +125,7 @@ class BridgeState:
         final_leverage = self.risk_mgr.adjust_leverage(
             current_leverage,
             confidence,
-            lev_rec.get("recommended_leverage"),
+            lev_rec.get("recommended_leverage", current_leverage),
         )
 
         position_payload = None
