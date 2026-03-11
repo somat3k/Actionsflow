@@ -48,13 +48,14 @@ def parse_snapshot_end_ms(
 ) -> Optional[int]:
     """Parse DATA_SNAPSHOT_END_MS into an integer timestamp.
 
-    Returns None when the value is missing or invalid. When a logger is
-    provided, invalid values emit a warning before returning None.
+    Returns None when the value is missing, invalid, or outside a reasonable
+    UTC epoch range. When a logger is provided, invalid values emit a warning
+    before returning None.
     """
     if not raw:
         return None
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         if logger:
             logger.warning(
@@ -62,6 +63,23 @@ def parse_snapshot_end_ms(
                 raw,
             )
         return None
+    if value < 0:
+        if logger:
+            logger.warning(
+                "Invalid DATA_SNAPSHOT_END_MS=%s; ignoring value",
+                raw,
+            )
+        return None
+    min_epoch_ms = int(datetime(2000, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+    max_epoch_ms = utc_now_ms() + 7 * 24 * 60 * 60 * 1000
+    if value < min_epoch_ms or value > max_epoch_ms:
+        if logger:
+            logger.warning(
+                "Invalid DATA_SNAPSHOT_END_MS=%s; ignoring value",
+                raw,
+            )
+        return None
+    return value
 
 
 def ms_to_dt(ms: int) -> datetime:

@@ -179,6 +179,7 @@ python -m src.main --run-type full-cycle --mode paper
 # Optional overrides
 # DATA_SNAPSHOT_END_MS=...            # Freeze data snapshot across the full cycle
 # TRADING_ELIGIBILITY_OVERRIDE=true   # Force trading step even if evaluation fails
+# LIVE_TRADING_ENABLED=true           # Enable live trade execution for full-cycle runs
 ```
 
 ### Streamlit Dashboard

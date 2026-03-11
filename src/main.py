@@ -1110,6 +1110,10 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
         if not _is_live_trading_enabled():
             log.warning("LIVE_TRADING_ENABLED not set; skipping live trading step")
         else:
+            if os.environ.pop("DATA_SNAPSHOT_END_MS", None) is not None:
+                log.info(
+                    "Cleared DATA_SNAPSHOT_END_MS for live trading; using current market data"
+                )
             trade_rc = run_live_signal(config_path)
             if trade_rc != 0:
                 db.record_task_completion(
