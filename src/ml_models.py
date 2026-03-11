@@ -265,7 +265,8 @@ class QuantumEnsemble:
         epochs = max(1, epochs)
         epoch_results: List[Dict[str, Any]] = []
         for epoch in range(1, epochs + 1):
-            fraction = epoch / epochs
+            progress = epoch / epochs
+            fraction = max(0.35, progress ** 0.5)
             window = max(1, int(total_rows * fraction))
             epoch_df = df.tail(window)
             scores = self.train(epoch_df, symbol=symbol)

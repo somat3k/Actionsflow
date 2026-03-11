@@ -30,6 +30,7 @@ class OpenAICompatibleOrchestrator:
         self.api_url = provider_cfg.api_url
         self.temperature = provider_cfg.temperature
         self.max_output_tokens = provider_cfg.max_output_tokens
+        self.timeout_seconds = getattr(provider_cfg, "timeout_seconds", 30)
 
     @property
     def available(self) -> bool:
@@ -100,10 +101,18 @@ class OpenAICompatibleOrchestrator:
             "max_tokens": self.max_output_tokens,
         }
         try:
-            response = requests.post(self.api_url, json=payload, timeout=30)
+            response = requests.post(self.api_url, json=payload, timeout=self.timeout_seconds)
             response.raise_for_status()
             data = response.json()
-            return data.get("choices", [{}])[0].get("message", {}).get("content")
+            choices = data.get("choices", [])
+            if not isinstance(choices, list) or not choices:
+                log.warning("%s API response missing choices", self.name)
+                return None
+            message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+            if not isinstance(message, dict):
+                log.warning("%s API response missing message content", self.name)
+                return None
+            return message.get("content")
         except requests.exceptions.RequestException as exc:
             log.warning("%s API call failed: %s", self.name, exc)
             return None

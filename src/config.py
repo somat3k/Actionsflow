@@ -106,6 +106,7 @@ class GroqConfig:
     api_url: str = "https://api.groq.com/openai/v1/chat/completions"
     temperature: float = 0.1
     max_output_tokens: int = 2048
+    timeout_seconds: int = 30
 
 
 @dataclass
@@ -115,6 +116,7 @@ class OpenRouterConfig:
     api_url: str = "https://openrouter.ai/api/v1/chat/completions"
     temperature: float = 0.1
     max_output_tokens: int = 2048
+    timeout_seconds: int = 30
 
 
 @dataclass
@@ -303,6 +305,9 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         max_output_tokens=int(
             os.environ.get("GROQ_MAX_TOKENS", groq_raw.get("max_output_tokens", 2048))
         ),
+        timeout_seconds=int(
+            os.environ.get("GROQ_TIMEOUT_SECONDS", groq_raw.get("timeout_seconds", 30))
+        ),
     )
 
     openrouter = OpenRouterConfig(
@@ -317,6 +322,9 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         ),
         max_output_tokens=int(
             os.environ.get("OPENROUTER_MAX_TOKENS", openrouter_raw.get("max_output_tokens", 2048))
+        ),
+        timeout_seconds=int(
+            os.environ.get("OPENROUTER_TIMEOUT_SECONDS", openrouter_raw.get("timeout_seconds", 30))
         ),
     )
 

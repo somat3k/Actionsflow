@@ -60,6 +60,7 @@ class DatasetManager:
 
         df = fetcher.download_ohlcv_history(symbol, interval, lookback_candles=lookback)
         if df.empty:
+            log.warning("No OHLCV data returned for %s – dataset not updated", symbol)
             return df
 
         path = self._build_dataset_path(symbol, interval, df)
@@ -111,7 +112,8 @@ class DatasetManager:
         for col in working.columns:
             series = pd.to_numeric(working[col], errors="coerce")
             if series.isnull().any():
-                series = series.fillna(0)
+                log.warning("NaN values detected in dataset column '%s' – applying fill", col)
+                series = series.ffill().bfill().fillna(0)
             arr = series.to_numpy()
             if arr.dtype.kind in {"i", "u"}:
                 tensors[col] = arr.astype(np.int64)

@@ -164,7 +164,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
     dataset_mgr = DatasetManager(cfg, db)
     training_epochs = max(1, cfg.ml.training_epochs)
     reinforcement_alpha = cfg.ml.reinforcement_alpha
-    force_refresh = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
+    force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
 
     results: Dict[str, Any] = {}
     epoch_scores: Dict[str, Any] = {}
@@ -178,7 +178,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
             symbol,
             cfg.data.primary_interval,
             lookback_candles=cfg.data.training_lookback_candles,
-            force_refresh=force_refresh,
+            force_refresh=force_retrain,
         )
         if df.empty:
             log.warning("No data for %s – skipping training", symbol)

@@ -73,7 +73,7 @@ trading:
   risk:
     max_drawdown_pct: 0.20            # 20% max drawdown before halting
     daily_loss_limit_pct: 0.05        # 5% daily loss limit
-    max_open_positions: 8
+    max_open_positions: 8             # Match expanded symbol universe
     stop_loss_atr_multiplier: 2.0
     take_profit_atr_multiplier: 3.0
     trailing_stop_pct: 0.015          # 1.5% trailing stop
@@ -220,11 +220,13 @@ groq:
   model: "llama3-70b-8192"
   temperature: 0.1
   max_output_tokens: 2048
+  timeout_seconds: 30
 
 openrouter:
   model: "openai/gpt-4o-mini"
   temperature: 0.1
   max_output_tokens: 2048
+  timeout_seconds: 30
 
 # ── Paper Broker ─────────────────────────────────────────────
 paper_broker:
