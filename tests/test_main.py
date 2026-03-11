@@ -213,3 +213,29 @@ def test_full_cycle_skips_live_trading_when_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr("src.main.run_live_signal", _fail_live_signal)
 
     assert run_full_cycle() == 0
+
+
+def test_full_cycle_blocks_live_trading_when_ineligible(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADING_MODE", "live")
+    monkeypatch.setenv("LOG_LEVEL", "WARNING")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "results").mkdir()
+    (tmp_path / ".trading_state").mkdir()
+
+    cfg = load_config()
+    db_path = tmp_path / cfg.system.state_dir / cfg.system.database_file
+    monkeypatch.setattr("src.main._build_db_manager", lambda _cfg: DatabaseManager(db_path))
+    monkeypatch.setattr("src.main.run_training", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr("src.main.run_paper_signal", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr("src.main.run_evaluation", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr("src.main.run_model_export", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr("src.main._resolve_trading_eligibility", lambda _db: (False, "no"))
+    monkeypatch.setattr("src.main._is_live_trading_enabled", lambda: True)
+
+    def _fail_live_signal(*_args, **_kwargs):
+        pytest.fail("live trading ran")
+
+    monkeypatch.setattr("src.main.run_live_signal", _fail_live_signal)
+
+    assert run_full_cycle() == 0

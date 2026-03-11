@@ -58,7 +58,7 @@ def parse_snapshot_end_ms(
     except ValueError:
         if logger:
             logger.warning(
-                "Invalid DATA_SNAPSHOT_END_MS=%s; falling back to current time",
+                "Invalid DATA_SNAPSHOT_END_MS=%s; ignoring value",
                 raw,
             )
         return None
