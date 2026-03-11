@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 import externals.python.gemini_bridge_server as bridge
 
@@ -70,6 +71,7 @@ def test_handle_payload_filters_trades(monkeypatch):
     response = state.handle_payload(_make_payload())
     assert response["status"] == "ok"
     assert response["metrics"]["total_trades"] == 1
+    assert response["metrics"]["initial_equity"] == pytest.approx(9990.0)
     assert response["position"] is not None
 
 
@@ -77,3 +79,12 @@ def test_handle_payload_model_unavailable(monkeypatch):
     state = _build_state(monkeypatch, DummyEnsembleUnavailable)
     response = state.handle_payload(_make_payload())
     assert response["status"] == "model_unavailable"
+
+
+def test_handle_payload_initial_equity_override(monkeypatch):
+    state = _build_state(monkeypatch, DummyEnsemble)
+    payload = _make_payload()
+    payload["initial_equity"] = 9000
+    response = state.handle_payload(payload)
+    assert response["status"] == "ok"
+    assert response["metrics"]["initial_equity"] == pytest.approx(9000.0)
