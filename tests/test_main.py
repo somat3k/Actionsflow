@@ -161,6 +161,10 @@ def test_resolve_trading_eligibility_override(tmp_path, monkeypatch):
     assert "override" in reason.lower()
 
 
+def _fail_live_signal(*_args, **_kwargs):
+    pytest.fail("live trading ran")
+
+
 def test_full_cycle_sequences_steps(monkeypatch, tmp_path):
     monkeypatch.setenv("TRADING_MODE", "paper")
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
@@ -207,9 +211,6 @@ def test_full_cycle_skips_live_trading_when_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr("src.main.run_model_export", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr("src.main._resolve_trading_eligibility", lambda _db: (True, "ok"))
     monkeypatch.setattr("src.main._is_live_trading_enabled", lambda: False)
-    def _fail_live_signal(*_args, **_kwargs):
-        pytest.fail("live trading ran")
-
     monkeypatch.setattr("src.main.run_live_signal", _fail_live_signal)
 
     assert run_full_cycle() == 0
@@ -232,9 +233,6 @@ def test_full_cycle_blocks_live_trading_when_ineligible(monkeypatch, tmp_path):
     monkeypatch.setattr("src.main.run_model_export", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr("src.main._resolve_trading_eligibility", lambda _db: (False, "no"))
     monkeypatch.setattr("src.main._is_live_trading_enabled", lambda: True)
-
-    def _fail_live_signal(*_args, **_kwargs):
-        pytest.fail("live trading ran")
 
     monkeypatch.setattr("src.main.run_live_signal", _fail_live_signal)
 
