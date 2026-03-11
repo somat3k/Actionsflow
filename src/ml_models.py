@@ -54,6 +54,14 @@ except ImportError:
     _XGB_AVAILABLE = False
     log.warning("XGBoost not available – XGBoost model disabled")
 
+try:
+    from skl2onnx import convert_sklearn
+    from skl2onnx.common.data_types import FloatTensorType
+
+    _ONNX_AVAILABLE = True
+except ImportError:
+    _ONNX_AVAILABLE = False
+
 # ── Feature columns (must match add_all_features output) ──────────────────────
 FEATURE_COLS = [
     "rsi_14", "rsi_7",
@@ -889,6 +897,44 @@ class QuantumEnsemble:
             joblib.dump(self.nn_model, prefix / "nn.pkl")
         log.info("Models saved to %s", prefix)
 
+    def export_onnx(self, symbol: str) -> Dict[str, str]:
+        """Export the three sklearn classifiers (GB, RF, Linear) to ONNX format.
+
+        Requires the optional ``skl2onnx`` package.  Returns a dict mapping
+        model name → exported ONNX file path for successfully exported models.
+        """
+        if not _ONNX_AVAILABLE:
+            log.warning(
+                "skl2onnx not installed – ONNX export skipped. "
+                "Install with: pip install skl2onnx onnxruntime"
+            )
+            return {}
+
+        prefix = self.save_dir / symbol
+        prefix.mkdir(parents=True, exist_ok=True)
+        n_features = len(self.feature_cols) if self.feature_cols else 1
+        initial_type = [("float_input", FloatTensorType([None, n_features]))]
+
+        exported: Dict[str, str] = {}
+        candidates = {
+            "gb": self.gb_model,
+            "rf": self.rf_model,
+            "linear": self.linear_model,
+        }
+        for name, model in candidates.items():
+            if model is None:
+                continue
+            try:
+                onnx_model = convert_sklearn(model, initial_types=initial_type, target_opset=15)
+                onnx_path = prefix / f"{name}.onnx"
+                with open(onnx_path, "wb") as fh:
+                    fh.write(onnx_model.SerializeToString())
+                exported[name] = str(onnx_path)
+                log.info("Exported %s ONNX model for %s → %s", name, symbol, onnx_path)
+            except Exception as exc:
+                log.warning("ONNX export failed for %s/%s: %s", symbol, name, exc)
+        return exported
+
     def load(self, symbol: str) -> bool:
         """Load pre-trained models. Returns True if successful."""
         prefix = self.save_dir / symbol
@@ -932,3 +978,125 @@ class QuantumEnsemble:
             self.nn_model = joblib.load(nn_path)
         log.info("Models loaded from %s", prefix)
         return True
+
+
+# ── Regime-to-model mapping ────────────────────────────────────────────────────
+# Maps AI-determined market regime labels to the model best suited for that
+# market condition.  Trending markets favour gradient-boosted trees (xgb/gb),
+# high-volatility environments benefit from the diversity of Random Forest, and
+# stable/ranging conditions suit the simpler Linear classifier.
+_REGIME_MODEL_MAP: Dict[str, str] = {
+    "trending_up": "xgb",
+    "trending_down": "xgb",
+    "volatile": "rf",
+    "ranging": "linear",
+    "consolidating": "linear",
+}
+
+
+class ModelDelegationAgent:
+    """Orchestrated AI agent that delegates market predictions to the model
+    best suited for the current market regime.
+
+    Rather than always returning the weighted ensemble average, this agent
+    reads the regime provided by the AI orchestrator (or cached from the
+    previous cycle) and routes the inference request to the specialised
+    model.  It falls back to the full ensemble whenever the best model for
+    the regime is not loaded.
+
+    Regime → model mapping:
+        trending_up / trending_down → XGBoost  (tree-based trend following)
+        volatile                    → Random Forest  (diversity / uncertainty)
+        ranging / consolidating     → Linear  (mean-reversion / stable)
+        unknown / other             → full weighted ensemble
+    """
+
+    def __init__(self, ensemble: "QuantumEnsemble") -> None:
+        self._ensemble = ensemble
+
+    def predict(
+        self, df: "pd.DataFrame", regime: str = "unknown"
+    ) -> Dict[str, Any]:
+        """Return a prediction, delegating to the regime-appropriate model.
+
+        Falls back to the full ensemble if the selected model is not loaded.
+        The returned dict is identical in shape to ``QuantumEnsemble.predict``,
+        with an additional ``"delegated_to"`` key indicating which model was
+        used.
+        """
+        e = self._ensemble
+        target_key = _REGIME_MODEL_MAP.get(regime)
+        delegated_to = "ensemble"
+
+        model_available = {
+            "xgb": getattr(e, "xgb_model", None) is not None and _XGB_AVAILABLE,
+            "gb": getattr(e, "gb_model", None) is not None,
+            "rf": getattr(e, "rf_model", None) is not None,
+            "linear": getattr(e, "linear_model", None) is not None,
+        }
+
+        if target_key and model_available.get(target_key):
+            result = self._predict_single(df, target_key)
+            if result is not None:
+                result["delegated_to"] = target_key
+                return result
+
+        # Fall back to ensemble
+        result = e.predict(df)
+        result["delegated_to"] = delegated_to
+        return result
+
+    def _predict_single(
+        self, df: "pd.DataFrame", model_key: str
+    ) -> Optional[Dict[str, Any]]:
+        """Run inference using only the specified model."""
+        e = self._ensemble
+        if not getattr(e, "feature_cols", None):
+            return None
+        available = [c for c in e.feature_cols if c in df.columns]
+        if not available:
+            return None
+        X_raw = df[available].iloc[-1:].values.astype(np.float32)
+        X_s = e.scaler.transform(X_raw)
+
+        try:
+            xgb_model = getattr(e, "xgb_model", None)
+            gb_model = getattr(e, "gb_model", None)
+            rf_model = getattr(e, "rf_model", None)
+            linear_model = getattr(e, "linear_model", None)
+            if model_key == "xgb" and xgb_model is not None and _XGB_AVAILABLE:
+                proba = xgb_model.predict_proba(X_s)[0]
+            elif model_key == "gb" and gb_model is not None:
+                proba = gb_model.predict_proba(X_s)[0]
+            elif model_key == "rf" and rf_model is not None:
+                proba = rf_model.predict_proba(X_s)[0]
+            elif model_key == "linear" and linear_model is not None:
+                proba = linear_model.predict_proba(X_s)[0]
+            else:
+                return None
+        except Exception as exc:
+            log.warning("Delegated prediction failed for %s: %s", model_key, exc)
+            return None
+
+        n = len(proba)
+        flat_prob = float(proba[0]) if n > 0 else 1.0
+        long_prob = float(proba[1]) if n > 1 else 0.0
+        short_prob = float(proba[2]) if n > 2 else 0.0
+
+        max_prob = max(long_prob, short_prob, flat_prob)
+        if max_prob == long_prob and long_prob >= e.cfg.ml.long_threshold:
+            signal, confidence = 1, long_prob
+        elif max_prob == short_prob and short_prob >= e.cfg.ml.short_threshold:
+            signal, confidence = 2, short_prob
+        else:
+            signal, confidence = 0, flat_prob
+
+        return {
+            "signal": signal,
+            "confidence": confidence,
+            "long_prob": long_prob,
+            "short_prob": short_prob,
+            "flat_prob": flat_prob,
+            "agreement": 1.0,
+            "model_signals": {model_key: signal},
+        }
