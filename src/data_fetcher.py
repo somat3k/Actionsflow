@@ -24,6 +24,7 @@ from src.utils import (
     candles_to_dataframe,
     get_logger,
     interval_to_ms,
+    parse_snapshot_end_ms,
     utc_now_ms,
 )
 
@@ -328,14 +329,14 @@ class HyperliquidDataFetcher:
         if end_ms is not None:
             return end_ms
         snapshot_raw = os.environ.get("DATA_SNAPSHOT_END_MS")
+        parsed = parse_snapshot_end_ms(snapshot_raw)
+        if parsed is not None:
+            return parsed
         if snapshot_raw:
-            try:
-                return int(snapshot_raw)
-            except ValueError:
-                log.warning(
-                    "Invalid DATA_SNAPSHOT_END_MS=%s; falling back to current time",
-                    snapshot_raw,
-                )
+            log.warning(
+                "Invalid DATA_SNAPSHOT_END_MS=%s; falling back to current time",
+                snapshot_raw,
+            )
         return utc_now_ms()
 
     def _fetch_candle_snapshot(

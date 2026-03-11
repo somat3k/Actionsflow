@@ -44,7 +44,7 @@ from src.live_trader import LiveTrader
 from src.paper_broker import PaperBroker
 from src.risk_manager import PositionRequest, RiskManager
 from src.supervised_learning import SupervisedLearningModule
-from src.utils import fmt_pct, fmt_usd, get_logger, utc_now, utc_now_ms
+from src.utils import fmt_pct, fmt_usd, get_logger, parse_snapshot_end_ms, utc_now, utc_now_ms
 
 log = get_logger(__name__)
 
@@ -69,11 +69,11 @@ def _get_hyperliquid_private_key() -> Optional[str]:
 
 def _ensure_data_snapshot_end_ms() -> int:
     raw = os.environ.get("DATA_SNAPSHOT_END_MS")
+    parsed = parse_snapshot_end_ms(raw)
+    if parsed is not None:
+        return parsed
     if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            log.warning("DATA_SNAPSHOT_END_MS is invalid (%s); resetting snapshot clock", raw)
+        log.warning("DATA_SNAPSHOT_END_MS is invalid (%s); resetting snapshot clock", raw)
     snapshot = utc_now_ms()
     os.environ["DATA_SNAPSHOT_END_MS"] = str(snapshot)
     return snapshot
@@ -1049,7 +1049,12 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
 
 
 def run_full_cycle(config_path: Optional[Path] = None) -> int:
-    """Run the full pipeline end-to-end on a consistent data snapshot."""
+    """Run the full pipeline end-to-end on a consistent data snapshot.
+
+    Returns 0 on success; non-zero if any pipeline stage fails. Behaviour can be
+    influenced by DATA_SNAPSHOT_END_MS (freeze data), TRADING_ELIGIBILITY_OVERRIDE
+    (force eligibility), and LIVE_TRADING_ENABLED (allow live execution).
+    """
     cfg = load_config(config_path)
     db = _build_db_manager(cfg)
     log.setLevel(cfg.system.log_level)
@@ -1095,10 +1100,9 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
         )
         return 0
 
-    if mode == "live" and not _is_live_trading_enabled():
-        log.warning("LIVE_TRADING_ENABLED not set; live trades will be dry-run")
-
     if mode == "live":
+        if not _is_live_trading_enabled():
+            log.warning("LIVE_TRADING_ENABLED not set; live trades will be dry-run")
         trade_rc = run_live_signal(config_path)
         if trade_rc != 0:
             return trade_rc

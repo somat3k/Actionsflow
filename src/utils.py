@@ -42,6 +42,15 @@ def utc_now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def parse_snapshot_end_ms(raw: Optional[str]) -> Optional[int]:
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def ms_to_dt(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
 
