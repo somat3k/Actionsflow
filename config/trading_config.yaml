@@ -24,30 +24,91 @@ trading:
     - symbol: "BTC"
       enabled: true
       weight: 0.20
+      market_type: "crypto"
     - symbol: "ETH"
       enabled: true
       weight: 0.15
+      market_type: "crypto"
     - symbol: "SOL"
       enabled: true
       weight: 0.10
+      market_type: "crypto"
     - symbol: "ARB"
       enabled: true
       weight: 0.05
+      market_type: "crypto"
     - symbol: "ZRO"
       enabled: true
       weight: 0.10
+      market_type: "crypto"
     - symbol: "AAVE"
       enabled: true
       weight: 0.10
+      market_type: "crypto"
     - symbol: "FLOKI"
       enabled: true
       weight: 0.10
+      market_type: "crypto"
     - symbol: "SHIB"
       enabled: true
       weight: 0.10
+      market_type: "crypto"
     - symbol: "XAUT"
       enabled: true
       weight: 0.10
+      market_type: "crypto"
+
+  # Index/equity markets – used for cross-market training features only
+  # (not traded directly on Hyperliquid; training_only=true)
+  index_markets:
+    - symbol: "GOOGL"
+      enabled: true
+      weight: 0.10
+      market_type: "index"
+      training_only: true
+      yf_ticker: "GOOGL"
+    - symbol: "AAPL"
+      enabled: true
+      weight: 0.10
+      market_type: "index"
+      training_only: true
+      yf_ticker: "AAPL"
+    - symbol: "NVDA"
+      enabled: true
+      weight: 0.10
+      market_type: "index"
+      training_only: true
+      yf_ticker: "NVDA"
+    - symbol: "US30"
+      enabled: true
+      weight: 0.10
+      market_type: "index"
+      training_only: true
+      yf_ticker: "^DJI"
+    - symbol: "SPX"
+      enabled: true
+      weight: 0.10
+      market_type: "index"
+      training_only: true
+      yf_ticker: "^GSPC"
+    - symbol: "JPM"
+      enabled: true
+      weight: 0.10
+      market_type: "index"
+      training_only: true
+      yf_ticker: "JPM"
+    - symbol: "SPY"
+      enabled: true
+      weight: 0.10
+      market_type: "index"
+      training_only: true
+      yf_ticker: "SPY"
+    - symbol: "NASDAQ"
+      enabled: true
+      weight: 0.10
+      market_type: "index"
+      training_only: true
+      yf_ticker: "QQQ"
 
   # Leverage configuration (10–35x adaptive)
   leverage:
@@ -97,9 +158,16 @@ data:
   # Lookback periods for feature engineering
   lookback:
     candles: 500                      # Number of candles for features
-    training_candles: 2000            # Higher-range training history
+    training_candles: 5000            # Higher-range training history (extended for better models)
     funding_periods: 48               # Funding rate history
     trade_depth: 20                   # Order book levels
+
+  # Long-range historical data CSV download for index markets
+  historical_csv:
+    enabled: true
+    dir: "datasets/csv"
+    max_years: 10                     # Maximum years of history to download
+    rate_limit_delay_s: 1.0           # Seconds between requests to avoid rate limiting
 
   dataset:
     dir: "datasets"
@@ -213,6 +281,15 @@ ml:
     reinforcement_alpha: 0.15
     retrain_interval_hours: 24        # Retrain every 24 hours
 
+  # Infinity-loop supervised learning (leader as student)
+  infinity_loop:
+    enabled: true
+    max_epochs: 0                     # 0 = infinite; set to N for bounded runs
+    zero_trade_threshold: 0           # Trigger hyperparameter adjustment if trades <= this
+    hp_adjust_step_threshold: 0.02    # Signal threshold step when adjusting for zero trades
+    hp_adjust_agreement_step: 0.05    # Ensemble agreement step when adjusting for zero trades
+    evaluation_interval_epochs: 10    # Re-evaluate after every N training epochs
+
 # ── Gemini AI Orchestrator ────────────────────────────────────
 gemini:
   model: "gemini-2.0-flash"
@@ -294,6 +371,14 @@ evaluation:
     adjust_if_drawdown_above: 0.15
     leverage_reduce_step: 5
     leverage_increase_step: 3
+
+  # Stabs/pierces: short-window checks to catch regime changes early
+  stabs:
+    enabled: true
+    window_trades: 10                 # Short window for quick detection
+    min_win_rate: 0.35                # Tighter threshold triggers "stab" alert
+    max_drawdown_pct: 0.12            # Drawdown stab threshold
+    pierce_sharpe_threshold: 0.5     # Sharpe below this signals a "pierce" deterioration
 
 # ── Notifications ─────────────────────────────────────────────
 notifications:
