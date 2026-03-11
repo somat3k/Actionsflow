@@ -1,0 +1,141 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Model Deployment – Daily ONNX Export & Re-deployment
+#  Exports the three sklearn classifiers (Gradient Boosting, Random Forest,
+#  Linear) to ONNX format and saves per-symbol OHLCV training data as CSV.
+#
+#  Schedule: 12:00 UTC – the midpoint of the 24-hour training window that
+#  starts at 00:00 UTC – so model redeployment never overlaps with active
+#  training.  After export, triggers a fresh signal cycle so the newly
+#  deployed models are immediately exercised by the trading pipeline.
+#
+#  Continuum Improvement methodology:
+#    1. (00:00 UTC) paper-training.yml trains and saves new model weights.
+#    2. (12:00 UTC) This workflow loads those weights, exports to ONNX, and
+#       saves CSV snapshots for offline evaluation.
+#    3. Fresh signal cycle is triggered with the just-deployed models.
+#    4. model-evaluation.yml (hourly) evaluates performance and may trigger
+#       another retrain if the Sharpe ratio degrades below threshold.
+# ══════════════════════════════════════════════════════════════════════════════
+
+name: Model Deployment – ONNX Export & Re-deployment
+
+on:
+  # Daily at 12:00 UTC – midpoint between training runs (00:00 UTC)
+  schedule:
+    - cron: "0 12 * * *"
+
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Comma-separated symbols to export (empty = all enabled)"
+        required: false
+        default: ""
+      install_onnx:
+        description: "Install optional ONNX dependencies (skl2onnx, onnxruntime)"
+        required: false
+        default: "true"
+        type: boolean
+
+concurrency:
+  group: model-deployment
+  cancel-in-progress: false
+
+jobs:
+  export-and-deploy:
+    name: Export Models to ONNX & Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install core dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install optional ONNX dependencies
+        if: ${{ inputs.install_onnx != 'false' }}
+        run: |
+          pip install "skl2onnx>=1.16,<2.0" "onnxruntime>=1.17,<2.0" || \
+            echo "⚠️ ONNX packages unavailable – export will be skipped" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore trained models
+        uses: actions/cache@v4
+        with:
+          path: |
+            .trading_state/
+            models/
+          key: trading-state-paper-${{ github.ref_name }}
+          restore-keys: |
+            trading-state-paper-
+
+      - name: Create required directories
+        run: mkdir -p models results .trading_state datasets/csv
+
+      - name: Export models to ONNX and save OHLCV CSV
+        env:
+          TRADING_MODE: paper
+          LOG_LEVEL: INFO
+          TRAINING_SYMBOLS: ${{ inputs.symbols || '' }}
+        run: |
+          echo "## 🚀 Model Deployment – $(date -u)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          python -m src.main --run-type export-models --mode paper
+
+      - name: Save updated state (with ONNX files)
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            .trading_state/
+            models/
+          key: trading-state-paper-${{ github.ref_name }}
+
+      - name: Upload exported ONNX models as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: onnx-models-${{ github.run_number }}
+          path: models/
+          retention-days: 90
+
+      - name: Upload OHLCV CSV snapshots as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ohlcv-csv-${{ github.run_number }}
+          path: datasets/csv/
+          retention-days: 30
+
+  # ── Trigger a fresh signal cycle with the newly deployed models ────────────
+  trigger-signal-cycle:
+    name: Trigger Post-Deployment Signal Cycle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: export-and-deploy
+    if: success()
+    steps:
+      - name: Dispatch signal cycle
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'quantum_trade_signal',
+              client_payload: {
+                mode: 'paper',
+                run_type: 'signal',
+                triggered_by: 'model-deployment'
+              }
+            });
+            core.info('Dispatched quantum_trade_signal after ONNX model deployment');
