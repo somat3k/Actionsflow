@@ -349,7 +349,12 @@ headline_metrics = [
 ]
 headline_cols = st.columns(len(headline_metrics))
 for col, (label, key) in zip(headline_cols, headline_metrics):
-    col.metric(label, _format_metric_value(key, metrics.get(key)))
+    value = metrics.get(key)
+    if key == "sharpe_ratio" and value is not None:
+        display_value = f"{value:.2f}"
+    else:
+        display_value = _format_metric_value(key, value)
+    col.metric(label, display_value)
 
 profiles = _gemini_profiles(cfg)
 control_col, canvas_col, chat_col = st.columns([1.2, 2.4, 1.4], gap="small")
