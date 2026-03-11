@@ -34,11 +34,21 @@ void OnTick()
 string BuildPayload()
 {
     string candles_json = BuildCandlesJson();
+    int long_count = 0;
+    int short_count = 0;
+    GetOpenPositionCounts(long_count, short_count);
     return StringFormat(
-        "{\"platform\":\"mql4\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"candles\":%s}",
+        "{\"platform\":\"mql4\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"candles\":%s,"
+        "\"account\":{\"equity\":%G,\"balance\":%G,\"leverage\":%d},"
+        "\"positions\":{\"long\":%d,\"short\":%d}}",
         Symbol(),
         TimeframeToString(Period()),
-        candles_json
+        candles_json,
+        AccountEquity(),
+        AccountBalance(),
+        AccountLeverage(),
+        long_count,
+        short_count
     );
 }
 
@@ -120,4 +130,22 @@ string TimeframeToString(int timeframe)
     if (timeframe == PERIOD_W1) return "W1";
     if (timeframe == PERIOD_MN1) return "MN1";
     return "M" + IntegerToString(timeframe);
+}
+
+void GetOpenPositionCounts(int &long_count, int &short_count)
+{
+    long_count = 0;
+    short_count = 0;
+    int total = OrdersTotal();
+    for (int i = 0; i < total; i++)
+    {
+        if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+            continue;
+        if (OrderSymbol() != Symbol())
+            continue;
+        if (OrderType() == OP_BUY)
+            long_count++;
+        else if (OrderType() == OP_SELL)
+            short_count++;
+    }
 }

@@ -34,6 +34,28 @@ MQL5, and cTrader cBot (cAlgo).
   "positions": {
     "long": 0.0,
     "short": 0.0
+  },
+  "market_snapshot": {
+    "funding": {
+      "mark_price": 1.0837,
+      "funding_rate": 0.0001,
+      "open_interest": 1200000
+    },
+    "order_book": {
+      "order_book_imbalance": 0.12,
+      "bid_ask_spread_bps": 1.5
+    },
+    "trade_flow_imbalance": -0.08
+  },
+  "recent_trades": [
+    {
+      "pnl": 42.5,
+      "fee_usd": 0.7,
+      "leverage": 20,
+      "duration_ms": 3600000,
+      "entry_time_ms": 1710146400000,
+      "exit_time_ms": 1710150000000
+    }
   }
 }
 ```
@@ -57,6 +79,26 @@ MQL5, and cTrader cBot (cAlgo).
     "regime": "trending_up",
     "reasoning": "Momentum aligned with model signal.",
     "risk_flags": []
+  },
+  "leverage": {
+    "current": 30,
+    "recommended": 28,
+    "final": 29,
+    "reasoning": "Blended ML/Gemini leverage recommendation."
+  },
+  "position": {
+    "symbol": "EURUSD",
+    "side": "long",
+    "entry_price": 1.0837,
+    "size_usd": 1200.0,
+    "size_contracts": 1107.5,
+    "leverage": 29,
+    "stop_loss": 1.0812,
+    "take_profit": 1.0869,
+    "trailing_stop_pct": 0.015,
+    "risk_usd": 27.6,
+    "allowed": true,
+    "reject_reason": ""
   }
 }
 ```
@@ -66,6 +108,12 @@ Signal mapping:
 - `0` = FLAT / HOLD
 - `1` = LONG
 - `2` = SHORT
+
+Notes:
+- `market_snapshot` and `recent_trades` are optional. When omitted, the bridge defaults to
+  zero microstructure values and empty performance metrics.
+- `position` is only populated when the final signal is `1` or `2`. It uses the same
+  RiskManager logic as the core project.
 
 ## Python Bridge (shared)
 

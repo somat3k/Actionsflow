@@ -38,11 +38,21 @@ void OnTick()
 string BuildPayload(const MqlRates &rates[], int copied)
 {
     string candles_json = BuildCandlesJson(rates, copied);
+    int long_count = 0;
+    int short_count = 0;
+    GetOpenPositionCounts(long_count, short_count);
     return StringFormat(
-        "{\"platform\":\"mql5\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"candles\":%s}",
+        "{\"platform\":\"mql5\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"candles\":%s,"
+        "\"account\":{\"equity\":%G,\"balance\":%G,\"leverage\":%d},"
+        "\"positions\":{\"long\":%d,\"short\":%d}}",
         Symbol(),
         TimeframeToString((int)Period()),
-        candles_json
+        candles_json,
+        AccountInfoDouble(ACCOUNT_EQUITY),
+        AccountInfoDouble(ACCOUNT_BALANCE),
+        (int)AccountInfoInteger(ACCOUNT_LEVERAGE),
+        long_count,
+        short_count
     );
 }
 
@@ -124,4 +134,24 @@ string TimeframeToString(int timeframe)
     if (timeframe == PERIOD_W1) return "W1";
     if (timeframe == PERIOD_MN1) return "MN1";
     return "M" + IntegerToString(timeframe);
+}
+
+void GetOpenPositionCounts(int &long_count, int &short_count)
+{
+    long_count = 0;
+    short_count = 0;
+    int total = PositionsTotal();
+    for (int i = 0; i < total; i++)
+    {
+        if (!PositionSelectByIndex(i))
+            continue;
+        string sym = PositionGetString(POSITION_SYMBOL);
+        if (sym != Symbol())
+            continue;
+        long type = PositionGetInteger(POSITION_TYPE);
+        if (type == POSITION_TYPE_BUY)
+            long_count++;
+        else if (type == POSITION_TYPE_SELL)
+            short_count++;
+    }
 }

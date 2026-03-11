@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
@@ -15,7 +16,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
 from src.config import load_config
+from src.evaluator import compute_metrics
 from src.ml_models import QuantumEnsemble
+from src.risk_manager import PositionRequest, RiskManager
 from src.utils import add_all_features
 
 try:
@@ -36,6 +39,7 @@ class BridgeState:
         self.cfg = load_config(Path(config_path)) if config_path else load_config()
         self.ensemble = QuantumEnsemble(self.cfg)
         self.gemini = GeminiOrchestrator(self.cfg) if GeminiOrchestrator else None
+        self.risk_mgr = RiskManager(self.cfg)
         self.loaded_symbols: set[str] = set()
 
     def ensure_models(self, symbol: str) -> bool:
@@ -86,13 +90,7 @@ class BridgeState:
 
         ml_signal = self.ensemble.predict(features)
         last_close = float(features["close"].iloc[-1])
-        # External platform payloads typically omit funding/order-book microstructure,
-        # so default these fields to zero unless the caller supplies richer data.
-        market_snapshot = {
-            "funding": {"mark_price": last_close, "funding_rate": 0.0, "open_interest": 0.0},
-            "order_book": {"order_book_imbalance": 0.0, "bid_ask_spread_bps": 0.0},
-            "trade_flow_imbalance": 0.0,
-        }
+        market_snapshot = self._build_market_snapshot(payload, last_close)
 
         gemini_result = self._analyse_with_gemini(symbol, ml_signal, market_snapshot)
         confidence = float(ml_signal.get("confidence", 0.0)) + float(
@@ -100,6 +98,50 @@ class BridgeState:
         )
         confidence = max(0.0, min(1.0, confidence))
         final_signal = int(gemini_result.get("validated_signal", ml_signal.get("signal", 0)))
+
+        account = payload.get("account") if isinstance(payload.get("account"), dict) else {}
+        positions = payload.get("positions") if isinstance(payload.get("positions"), dict) else {}
+        equity = self._coerce_float(account.get("equity"), self.cfg.trading.initial_equity)
+        balance = self._coerce_float(account.get("balance"), equity)
+        current_leverage = int(account.get("leverage", self.cfg.trading.leverage.default))
+        open_positions = int(positions.get("long", 0)) + int(positions.get("short", 0))
+        self.risk_mgr.reset_daily_tracking(equity)
+
+        recent_trades = payload.get("recent_trades", [])
+        if not isinstance(recent_trades, list):
+            recent_trades = []
+        recent_trades = [t for t in recent_trades if isinstance(t, dict)]
+        perf = compute_metrics(recent_trades, balance, equity)
+        lev_rec = self._recommend_leverage(
+            symbol,
+            ml_signal.get("confidence", 0.0),
+            gemini_result.get("regime", "unknown"),
+            current_leverage,
+            perf,
+        )
+        final_leverage = self.risk_mgr.adjust_leverage(
+            current_leverage,
+            confidence,
+            lev_rec.get("recommended_leverage"),
+        )
+
+        position_payload = None
+        if final_signal in (1, 2):
+            atr_value = float(features["atr_14"].iloc[-1]) if "atr_14" in features.columns else 0.0
+            position_spec = self.risk_mgr.compute_position(
+                PositionRequest(
+                    symbol=symbol,
+                    signal=final_signal,
+                    confidence=confidence,
+                    current_price=last_close,
+                    atr=atr_value,
+                    equity=equity,
+                    leverage=final_leverage,
+                    open_positions=open_positions,
+                ),
+                trade_history=recent_trades,
+            )
+            position_payload = asdict(position_spec)
 
         return {
             "status": "ok",
@@ -112,6 +154,14 @@ class BridgeState:
                 "confidence": ml_signal.get("confidence", 0.0),
             },
             "gemini": gemini_result,
+            "leverage": {
+                "current": current_leverage,
+                "recommended": lev_rec.get("recommended_leverage", current_leverage),
+                "final": final_leverage,
+                "reasoning": lev_rec.get("reasoning", ""),
+            },
+            "position": position_payload,
+            "metrics": asdict(perf),
         }
 
     def _analyse_with_gemini(
@@ -129,6 +179,52 @@ class BridgeState:
             "reasoning": fallback_reason,
             "risk_flags": [],
         }
+
+    def _build_market_snapshot(self, payload: Dict[str, Any], last_close: float) -> Dict[str, Any]:
+        snapshot = payload.get("market_snapshot") if isinstance(payload.get("market_snapshot"), dict) else {}
+        funding = snapshot.get("funding") if isinstance(snapshot.get("funding"), dict) else {}
+        order_book = snapshot.get("order_book") if isinstance(snapshot.get("order_book"), dict) else {}
+        return {
+            "funding": {
+                "mark_price": self._coerce_float(funding.get("mark_price"), last_close),
+                "funding_rate": self._coerce_float(funding.get("funding_rate"), 0.0),
+                "open_interest": self._coerce_float(funding.get("open_interest"), 0.0),
+            },
+            "order_book": {
+                "order_book_imbalance": self._coerce_float(
+                    order_book.get("order_book_imbalance"), 0.0
+                ),
+                "bid_ask_spread_bps": self._coerce_float(order_book.get("bid_ask_spread_bps"), 0.0),
+            },
+            "trade_flow_imbalance": self._coerce_float(
+                snapshot.get("trade_flow_imbalance"), 0.0
+            ),
+        }
+
+    def _recommend_leverage(
+        self,
+        symbol: str,
+        ml_confidence: float,
+        regime: str,
+        current_leverage: int,
+        perf: Any,
+    ) -> Dict[str, Any]:
+        perf_payload = asdict(perf) if hasattr(perf, "__dataclass_fields__") else {}
+        if self.gemini:
+            return self.gemini.recommend_leverage(
+                symbol, ml_confidence, regime, current_leverage, perf_payload
+            )
+        return {
+            "recommended_leverage": current_leverage,
+            "reasoning": "Gemini unavailable – using current leverage",
+        }
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
 
 
 STATE = BridgeState()
