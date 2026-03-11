@@ -272,8 +272,21 @@ class LiveTrader:
 
     @staticmethod
     def _asset_index(symbol: str) -> int:
-        """Return Hyperliquid asset index, loaded from config/symbols.json."""
-        return _SYMBOL_INDEX_MAP.get(symbol.upper(), 0)
+        """Return Hyperliquid asset index, loaded from config/symbols.json.
+
+        Raises ``ValueError`` if the symbol is not in the registry so that
+        leverage/order calls are never silently routed to the wrong asset.
+        """
+        if not _SYMBOL_INDEX_MAP:
+            raise RuntimeError(
+                "Symbol index map is empty – check that config/symbols.json is present"
+            )
+        key = symbol.upper()
+        if key not in _SYMBOL_INDEX_MAP:
+            raise ValueError(
+                f"Unknown trading symbol '{symbol}': not found in config/symbols.json"
+            )
+        return _SYMBOL_INDEX_MAP[key]
 
     def _dry_run_result(self, spec: PositionSpec) -> LiveOrderResult:
         return LiveOrderResult(

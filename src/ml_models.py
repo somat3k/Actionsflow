@@ -301,7 +301,9 @@ class QuantumEnsemble:
 
         # Tree-classifier-decision-making-system (ExtraTrees)
         tree_clf = ExtraTreesClassifier(
-            n_estimators=200, max_depth=10, n_jobs=-1, random_state=42
+            n_estimators=self.ml_cfg.extra_trees_n_estimators,
+            max_depth=self.ml_cfg.extra_trees_max_depth,
+            n_jobs=-1, random_state=42
         )
         tree_clf.fit(X_train_s, y_train)
         scores["tree_clf"] = float(np.mean(tree_clf.predict(X_val_s) == y_val))
@@ -508,7 +510,9 @@ class QuantumEnsemble:
         # across all input features, providing diverse signal coverage.
         log.info("Training ExtraTreesClassifier (tree-classifier-decision-making-system) …")
         self.tree_clf = ExtraTreesClassifier(
-            n_estimators=200, max_depth=10, n_jobs=-1, random_state=42
+            n_estimators=self.ml_cfg.extra_trees_n_estimators,
+            max_depth=self.ml_cfg.extra_trees_max_depth,
+            n_jobs=-1, random_state=42
         )
         self.tree_clf.fit(X_train_s, y_train)
         scores["tree_clf"] = float(np.mean(self.tree_clf.predict(X_val_s) == y_val))
@@ -854,6 +858,8 @@ class QuantumEnsemble:
         weights_sum = sum(
             self._model_weights.get(k, 0.10) for k in probas
         )
+        if weights_sum <= 0:
+            weights_sum = 1.0
         weighted_proba = sum(
             self._model_weights.get(k, 0.10) / weights_sum * probas[k]
             for k in probas

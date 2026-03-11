@@ -144,33 +144,66 @@ class HyperliquidDataFetcher:
         interval: str,
         lookback_candles: Optional[int] = None,
     ) -> Path:
-        """Download fresh OHLCV data and save it to a CSV file in the configured
-        CSV directory (``data.historical_csv_dir``).
+        """Incrementally update the OHLCV CSV for *symbol*/*interval*.
 
-        Returns the path to the saved file.  Suitable for daily scheduled runs
-        that seed training with the latest market data from the Hyperliquid API.
+        On first run the full ``lookback_candles`` history is fetched.  On
+        subsequent runs only the gap since the last saved timestamp is fetched
+        and merged, keeping the CSV small.  Rows older than
+        ``data.historical_csv_max_years`` are trimmed so files stay bounded.
+
+        Returns the path to the (updated) CSV file.
         """
         csv_dir = Path(self.cfg.data.historical_csv_dir)
         csv_dir.mkdir(parents=True, exist_ok=True)
         csv_path = csv_dir / f"{symbol}_{interval}.csv"
 
+        max_years = self.cfg.data.historical_csv_max_years
+        base_lookback = lookback_candles or self.cfg.data.training_lookback_candles
+        interval_ms = interval_to_ms(interval)
+        now_ms = utc_now_ms()
+
+        # ── Load existing CSV (if any) ────────────────────────────────────
+        existing: Optional[pd.DataFrame] = None
+        if csv_path.exists():
+            try:
+                existing = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+                if existing.empty:
+                    existing = None
+            except Exception as exc:
+                log.warning("Could not read existing CSV %s (%s) – starting fresh", csv_path, exc)
+                existing = None
+
+        # ── Decide fetch window ───────────────────────────────────────────
+        fetch_candles: Optional[int] = base_lookback
+        if existing is not None:
+            try:
+                last_ts_ms = int(existing.index.max().timestamp() * 1000)
+                ms_gap = max(0, now_ms - last_ts_ms)
+                if ms_gap <= interval_ms:
+                    # Already up-to-date; skip fetch.
+                    log.info("CSV %s is up-to-date – skipping download", csv_path)
+                    return csv_path
+                fetch_candles = min(base_lookback, max(1, ms_gap // interval_ms + 1))
+            except Exception:
+                pass  # Unusable index → fall back to base_lookback
+
         df = self.fetch_ohlcv_history(
-            symbol,
-            interval,
-            lookback_candles=lookback_candles or self.cfg.data.training_lookback_candles,
-            include_features=False,
+            symbol, interval, lookback_candles=fetch_candles, include_features=False
         )
         if df.empty:
             log.warning("No OHLCV data fetched for %s@%s – skipping CSV save", symbol, interval)
             return csv_path
 
-        if csv_path.exists():
-            existing = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-            if not existing.empty:
-                combined = pd.concat([existing, df])
-                combined = combined[~combined.index.duplicated(keep="last")]
-                combined.sort_index(inplace=True)
-                df = combined
+        # ── Merge with existing ───────────────────────────────────────────
+        if existing is not None:
+            df = pd.concat([existing, df])
+            df = df[~df.index.duplicated(keep="last")]
+            df.sort_index(inplace=True)
+
+        # ── Enforce retention window ──────────────────────────────────────
+        if max_years > 0 and isinstance(df.index, pd.DatetimeIndex):
+            cutoff = datetime.now(tz=timezone.utc) - timedelta(days=365 * max_years)
+            df = df[df.index >= cutoff]
 
         df.to_csv(csv_path)
         log.info("Saved %d OHLCV rows → %s", len(df), csv_path)
@@ -376,9 +409,9 @@ class HyperliquidDataFetcher:
                 {
                     "funding": "0.0001",
                     "openInterest": str(1_000.0),
-                    "markPx": str(entry["synthetic_price"]),
-                    "oraclePx": str(entry["synthetic_price"]),
-                    "midPx": str(entry["synthetic_price"]),
+                    "markPx": str(entry.get("synthetic_price", 1.0)),
+                    "oraclePx": str(entry.get("synthetic_price", 1.0)),
+                    "midPx": str(entry.get("synthetic_price", 1.0)),
                 }
                 for entry in _SYMBOLS_REGISTRY
             ]

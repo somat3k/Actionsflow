@@ -106,6 +106,9 @@ class MLConfig:
     model_weights: Dict[str, float] = field(
         default_factory=lambda: dict(_DEFAULT_MODEL_WEIGHTS)
     )
+    # ExtraTrees (tree-classifier-decision-making-system) hyperparameters
+    extra_trees_n_estimators: int = 200
+    extra_trees_max_depth: int = 10
     # Infinity-loop supervised learning
     infinity_loop_enabled: bool = True
     infinity_loop_max_epochs: int = 0         # 0 = infinite
@@ -363,6 +366,12 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             os.environ.get("REINFORCEMENT_ALPHA", training.get("reinforcement_alpha", 0.1))
         ),
         model_weights=model_weights,
+        extra_trees_n_estimators=int(
+            models_raw.get("extra_trees", {}).get("n_estimators", 200)
+        ),
+        extra_trees_max_depth=int(
+            models_raw.get("extra_trees", {}).get("max_depth", 10)
+        ),
         infinity_loop_enabled=bool(infinity_raw.get("enabled", True)),
         infinity_loop_max_epochs=int(infinity_raw.get("max_epochs", 0)),
         infinity_zero_trade_threshold=int(infinity_raw.get("zero_trade_threshold", 0)),

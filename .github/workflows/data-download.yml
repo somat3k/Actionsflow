@@ -69,12 +69,15 @@ jobs:
       - name: Download OHLCV data for all symbols
         env:
           TRADING_MODE: ${{ inputs.mode || 'paper' }}
-          TRAINING_SYMBOLS: ${{ inputs.symbols || '' }}
+          TRAINING_SYMBOLS: ${{ inputs.symbols }}
           LOG_LEVEL: INFO
         run: |
           echo "## 📥 Daily OHLCV Data Download" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Date:** $(date -u)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Mode:** ${{ inputs.mode || 'paper' }}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "${{ inputs.symbols }}" ]]; then
+            echo "- **Symbols filter:** ${{ inputs.symbols }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           python -m src.main --run-type download-data --mode "${{ inputs.mode || 'paper' }}"
 

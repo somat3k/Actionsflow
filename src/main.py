@@ -986,15 +986,16 @@ def run_download_data(config_path: Optional[Path] = None) -> int:
     """Download fresh OHLCV data from Hyperliquid for all enabled symbols and
     all configured timeframes, saving each as a CSV file.
 
-    This is intended to run once per day via the ``data-download`` GitHub
-    Actions workflow so that training sessions always start with up-to-date
-    market data.  The CSVs are written to ``data.historical_csv_dir`` and
-    merged with any existing data (deduplicating by timestamp).
+    Respects the TRAINING_SYMBOLS env var to scope the download to a subset of
+    symbols (same filter used by training runs).  A rate-limit delay is applied
+    between requests.  Returns a non-zero exit code when all downloads fail.
     """
     cfg = load_config(config_path)
     fetcher = HyperliquidDataFetcher(cfg)
 
-    enabled_markets = [m for m in cfg.trading.markets if m.enabled]
+    # Re-use the same symbol filter as training runs.
+    markets = _resolve_training_markets(cfg)
+    enabled_markets = [m for m in markets if m.enabled]
     all_timeframes = [
         cfg.data.primary_interval,
         cfg.data.secondary_interval,
@@ -1002,6 +1003,7 @@ def run_download_data(config_path: Optional[Path] = None) -> int:
         cfg.data.hourly_interval,
         cfg.data.daily_interval,
     ]
+    rate_delay = cfg.data.rate_limit_delay_s
 
     log.info(
         "=== DATA DOWNLOAD | %d symbols × %d timeframes ===",
@@ -1010,10 +1012,13 @@ def run_download_data(config_path: Optional[Path] = None) -> int:
     )
 
     results: Dict[str, Any] = {}
+    failures = 0
+    total = 0
     for market in enabled_markets:
         symbol = market.symbol
         results[symbol] = {}
         for tf in all_timeframes:
+            total += 1
             try:
                 csv_path = fetcher.save_ohlcv_csv(symbol, tf)
                 results[symbol][tf] = str(csv_path)
@@ -1021,9 +1026,13 @@ def run_download_data(config_path: Optional[Path] = None) -> int:
             except Exception as exc:
                 log.warning("Failed to download %s@%s: %s", symbol, tf, exc)
                 results[symbol][tf] = None
+                failures += 1
+            if rate_delay > 0:
+                time.sleep(rate_delay)
 
-    Path("results").mkdir(parents=True, exist_ok=True)
-    summary_path = Path("results") / "data_download_summary.json"
+    results_dir = Path(cfg.system.results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = results_dir / "data_download_summary.json"
     with open(summary_path, "w") as fh:
         json.dump(
             {
@@ -1031,12 +1040,18 @@ def run_download_data(config_path: Optional[Path] = None) -> int:
                 "symbols": list(results.keys()),
                 "timeframes": all_timeframes,
                 "files": results,
+                "failures": failures,
+                "total": total,
             },
             fh,
             indent=2,
         )
     log.info("Download summary written to %s", summary_path)
-    return 0
+
+    if failures > 0:
+        log.warning("%d / %d download(s) failed", failures, total)
+    # Return non-zero only when every single download failed (total > 0).
+    return 1 if total > 0 and failures == total else 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
