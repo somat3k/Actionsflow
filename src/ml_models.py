@@ -21,6 +21,20 @@ from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
+try:
+    from tqdm import tqdm as _tqdm
+
+    def _progress(iterable, **kwargs):
+        return _tqdm(iterable, ascii=True, dynamic_ncols=False, **kwargs)
+
+except ImportError:  # pragma: no cover – tqdm is optional at import time
+    def _progress(iterable, **kwargs):
+        desc = kwargs.get("desc", "")
+        total = kwargs.get("total", None)
+        if desc:
+            log.info("%s …", desc)
+        return iterable
+
 warnings.filterwarnings("ignore")
 
 from src.config import AppConfig, MLConfig
@@ -460,13 +474,24 @@ class QuantumEnsemble:
         epochs: int,
         reinforcement_alpha: float,
     ) -> List[Dict[str, Any]]:
-        """Train the ensemble over progressive epochs with reinforcement updates."""
+        """Train the ensemble over progressive epochs with reinforcement updates.
+
+        A tqdm progress bar is shown per epoch when the ``tqdm`` package is
+        available.  Falls back to plain logging otherwise.
+        """
         total_rows = len(df)
         if total_rows <= 0:
             return []
         epochs = max(1, epochs)
         epoch_results: List[Dict[str, Any]] = []
-        for epoch in range(1, epochs + 1):
+        epoch_bar = _progress(
+            range(1, epochs + 1),
+            desc=f"[{symbol}] epochs",
+            total=epochs,
+            unit="epoch",
+            leave=True,
+        )
+        for epoch in epoch_bar:
             progress = epoch / epochs
             # Ensure minimum 35% of data for stable training signals in early epochs.
             fraction = max(0.35, progress ** 0.5)
@@ -491,6 +516,166 @@ class QuantumEnsemble:
                     "weights": weights,
                 }
             )
+            best_score = max(scores.values(), default=0.0)
+            if hasattr(epoch_bar, "set_postfix"):
+                epoch_bar.set_postfix(rows=len(epoch_df), best_acc=f"{best_score:.4f}")
+        return epoch_results
+
+    # ── Multi-timeframe epoch training ────────────────────────────────────────
+
+    # Canonical timeframe ordering from lowest to highest resolution.
+    _TF_ORDER = ["1m", "5m", "15m", "1H", "1h", "1D", "1d"]
+
+    # Decision weights used in combined_decision – higher TF carries more weight.
+    _TF_WEIGHTS: Dict[str, float] = {
+        "1m": 0.10, "5m": 0.15, "15m": 0.25, "1H": 0.25, "1h": 0.25,
+        "1D": 0.25, "1d": 0.25,
+    }
+
+    def train_multi_timeframe_with_progression(
+        self,
+        tf_dataframes: Dict[str, pd.DataFrame],
+        symbol: str,
+        epochs: int,
+        reinforcement_alpha: float,
+        primary_tf: str = "1m",
+    ) -> List[Dict[str, Any]]:
+        """Train across all provided timeframes for *epochs* epochs.
+
+        For every epoch the ensemble is trained on a progressively growing
+        window of each timeframe's data (same schedule as
+        :meth:`train_with_progression`).  After all timeframes have been
+        trained, reinforcement-learning weight updates are applied based on
+        the *combined* (averaged) validation accuracy across timeframes.
+        The resulting model represents all timeframes; the primary timeframe
+        data is used for the global-ensemble ``train()`` call so that the
+        base ``predict()`` method works correctly.
+
+        Args:
+            tf_dataframes: Mapping of timeframe label → feature-enriched
+                OHLCV DataFrame (1m, 5m, 15m, 1h, 1d, …).
+            symbol: Trading symbol (e.g. "BTC").
+            epochs: Number of training epochs (default config: 200).
+            reinforcement_alpha: RL weight-update step-size.
+            primary_tf: The timeframe used for base-model training so that
+                :meth:`predict` works after this call.
+
+        Returns:
+            List of per-epoch result dicts with keys: epoch, tf_scores,
+            combined_scores, weights.
+        """
+        # Remove empty DataFrames.
+        valid_tfs = {
+            tf: df for tf, df in tf_dataframes.items() if not df.empty
+        }
+        if not valid_tfs:
+            log.warning("No valid timeframe data for %s – aborting MTF training", symbol)
+            return []
+
+        epochs = max(1, epochs)
+        tf_row_counts = {tf: len(df) for tf, df in valid_tfs.items()}
+        epoch_results: List[Dict[str, Any]] = []
+
+        # Sorted timeframe list for deterministic iteration.
+        ordered_tfs = sorted(
+            valid_tfs.keys(),
+            key=lambda t: self._TF_ORDER.index(t) if t in self._TF_ORDER else 99,
+        )
+
+        log.info(
+            "=== MTF Training: %s | %d epochs | timeframes: %s ===",
+            symbol, epochs, ordered_tfs,
+        )
+
+        epoch_bar = _progress(
+            range(1, epochs + 1),
+            desc=f"[{symbol}] MTF epochs",
+            total=epochs,
+            unit="epoch",
+            leave=True,
+        )
+        for epoch in epoch_bar:
+            progress = epoch / epochs
+            # Progressive data window: start at 35%, grow to 100%.
+            fraction = max(0.35, progress ** 0.5)
+
+            tf_scores: Dict[str, Dict[str, float]] = {}
+
+            # Train each timeframe model.
+            tf_bar = _progress(
+                ordered_tfs,
+                desc=f"  [{symbol}] e{epoch:03d} timeframes",
+                total=len(ordered_tfs),
+                unit="tf",
+                leave=False,
+            )
+            for tf in tf_bar:
+                df = valid_tfs[tf]
+                total_rows = tf_row_counts[tf]
+                window = max(1, int(total_rows * fraction))
+                epoch_df = df.tail(window)
+                scores = self.train_timeframe(epoch_df, symbol, tf)
+                if scores:
+                    tf_scores[tf] = scores
+                if hasattr(tf_bar, "set_postfix"):
+                    best = max(scores.values(), default=0.0)
+                    tf_bar.set_postfix(tf=tf, best_acc=f"{best:.4f}")
+
+            # Also train the global ensemble on the primary timeframe so that
+            # the ensemble's base-predict() method is current.
+            primary_df = valid_tfs.get(primary_tf)
+            if primary_df is None or primary_df.empty:
+                primary_df = next(iter(valid_tfs.values()))
+            p_total = len(primary_df)
+            p_window = max(1, int(p_total * fraction))
+            global_scores = self.train(primary_df.tail(p_window), symbol=symbol, save=False)
+
+            # Aggregate scores: average accuracy across all timeframes.
+            combined_scores: Dict[str, float] = {}
+            all_model_keys = set(global_scores.keys())
+            for tf_sc in tf_scores.values():
+                all_model_keys.update(tf_sc.keys())
+            for model in all_model_keys:
+                values = [
+                    tf_sc[model]
+                    for tf_sc in tf_scores.values()
+                    if model in tf_sc
+                ]
+                if model in global_scores:
+                    values.append(global_scores[model])
+                combined_scores[model] = float(np.mean(values)) if values else 0.0
+
+            # Reinforcement-learning weight update.
+            weights = self.apply_reinforcement(combined_scores, reinforcement_alpha)
+
+            try:
+                self._save(symbol)
+            except Exception as exc:
+                log.warning(
+                    "Failed to save model artifacts for %s (epoch %d): %s",
+                    symbol, epoch, exc,
+                )
+
+            epoch_results.append(
+                {
+                    "epoch": epoch,
+                    "tf_scores": tf_scores,
+                    "combined_scores": combined_scores,
+                    "weights": weights,
+                }
+            )
+
+            best_combined = max(combined_scores.values(), default=0.0)
+            if hasattr(epoch_bar, "set_postfix"):
+                epoch_bar.set_postfix(
+                    tfs=len(tf_scores),
+                    best_acc=f"{best_combined:.4f}",
+                )
+
+        log.info(
+            "MTF Training complete for %s (%d epochs, %d timeframes)",
+            symbol, epochs, len(ordered_tfs),
+        )
         return epoch_results
 
     def apply_reinforcement(

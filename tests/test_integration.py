@@ -33,11 +33,13 @@ def test_pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     Isolated environment for integration tests.
 
     * Sets TRADING_MODE=test so the data fetcher returns synthetic data.
+    * Sets TRAINING_EPOCHS=2 so epoch-based training completes quickly.
     * Changes the working directory to ``tmp_path`` so state/model/result
       files are written there instead of polluting the repository root.
     """
     monkeypatch.setenv("TRADING_MODE", "test")
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
+    monkeypatch.setenv("TRAINING_EPOCHS", "2")
     monkeypatch.chdir(tmp_path)
 
     # Pre-create directories expected by the pipeline.

@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -81,6 +81,11 @@ class DataConfig:
     dataset_format: str = "safetensors"
 
 
+_DEFAULT_MODEL_WEIGHTS: Dict[str, float] = {
+    "xgb": 0.30, "gb": 0.10, "rf": 0.20, "lstm": 0.25, "linear": 0.15,
+}
+
+
 @dataclass
 class MLConfig:
     long_threshold: float = 0.60
@@ -89,8 +94,11 @@ class MLConfig:
     min_ensemble_agreement: float = 0.60
     model_save_dir: str = "models"
     retrain_interval_hours: int = 24
-    training_epochs: int = 1
+    training_epochs: int = 200
     reinforcement_alpha: float = 0.1
+    model_weights: Dict[str, float] = field(
+        default_factory=lambda: dict(_DEFAULT_MODEL_WEIGHTS)
+    )
 
 
 @dataclass
@@ -302,10 +310,11 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         min_ensemble_agreement=float(signals.get("min_ensemble_agreement", 0.60)),
         model_save_dir=training.get("model_save_dir", "models"),
         retrain_interval_hours=int(training.get("retrain_interval_hours", 24)),
-        training_epochs=int(os.environ.get("TRAINING_EPOCHS", training.get("epochs", 1))),
+        training_epochs=int(os.environ.get("TRAINING_EPOCHS", training.get("epochs", 200))),
         reinforcement_alpha=float(
             os.environ.get("REINFORCEMENT_ALPHA", training.get("reinforcement_alpha", 0.1))
         ),
+        model_weights=model_weights,
     )
 
     # ── Gemini ────────────────────────────────────────────────
