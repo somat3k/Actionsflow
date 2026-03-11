@@ -59,11 +59,24 @@ def compute_metrics(
     trade_history: List[Dict[str, Any]],
     initial_equity: float,
     final_equity: float,
+    *,
+    num_positions: int = 0,
+    gemini_answer_time_avg_s: float = 0.0,
+    action_time_avg_s: float = 0.0,
 ) -> PerformanceMetrics:
-    """Compute full performance metrics from a list of closed trade dicts."""
+    """Compute full performance metrics from a list of closed trade dicts.
+
+    Optional keyword arguments ``num_positions``, ``gemini_answer_time_avg_s``
+    and ``action_time_avg_s`` are forwarded directly into the returned
+    :class:`PerformanceMetrics` since they are measured externally by the
+    signal cycle rather than derivable from trade history alone.
+    """
     m = PerformanceMetrics(
         initial_equity=initial_equity,
         final_equity=final_equity,
+        num_positions=num_positions,
+        gemini_answer_time_avg_s=gemini_answer_time_avg_s,
+        action_time_avg_s=action_time_avg_s,
     )
 
     if not trade_history:
@@ -160,12 +173,23 @@ class Evaluator:
         trade_history: List[Dict[str, Any]],
         initial_equity: float,
         final_equity: float,
+        *,
+        num_positions: int = 0,
+        gemini_answer_time_avg_s: float = 0.0,
+        action_time_avg_s: float = 0.0,
     ) -> Tuple[PerformanceMetrics, List[Dict[str, Any]]]:
         """
         Compute metrics and return (metrics, adjustment_recommendations).
         Each adjustment is a dict: {parameter, old_value, new_value, reason}.
         """
-        metrics = compute_metrics(trade_history, initial_equity, final_equity)
+        metrics = compute_metrics(
+            trade_history,
+            initial_equity,
+            final_equity,
+            num_positions=num_positions,
+            gemini_answer_time_avg_s=gemini_answer_time_avg_s,
+            action_time_avg_s=action_time_avg_s,
+        )
         adjustments = []
 
         if not self.eval_cfg.auto_adjust_enabled:

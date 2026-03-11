@@ -34,10 +34,10 @@ class SupervisedLearningModule:
     dynamically adjusts strategy parameters.
 
     The module:
-    1. Tracks prediction accuracy per symbol and timeframe.
+    1. Tracks prediction accuracy per symbol.
     2. Adjusts signal thresholds based on rolling win-rate accuracy.
     3. Re-weights model ensemble based on individual model accuracy.
-    4. Elevates training data by surfacing recent market regimes.
+    4. Surfaces recent market regimes for training data elevation.
     """
 
     def __init__(self, config: AppConfig) -> None:
@@ -79,31 +79,49 @@ class SupervisedLearningModule:
 
         # Tighten thresholds if accuracy is low
         if win_rate < self.cfg.evaluation.min_win_rate and len(trade_history) >= 10:
-            old_thresh = self.cfg.ml.long_threshold
-            new_thresh = min(0.80, old_thresh + 0.02)
-            if new_thresh != old_thresh:
-                adj = LearningAdjustment(
-                    parameter="ml.long_threshold",
-                    old_value=old_thresh,
-                    new_value=new_thresh,
-                    reason=f"Win rate {win_rate:.2%} below {self.cfg.evaluation.min_win_rate:.2%}",
+            old_long_thresh = self.cfg.ml.long_threshold
+            old_short_thresh = self.cfg.ml.short_threshold
+            new_thresh = min(0.80, old_long_thresh + 0.02)
+            if new_thresh != old_long_thresh:
+                reason = (
+                    f"Win rate {win_rate:.2%} below {self.cfg.evaluation.min_win_rate:.2%}"
                 )
-                adjustments.append(adj)
+                adjustments.append(LearningAdjustment(
+                    parameter="ml.long_threshold",
+                    old_value=old_long_thresh,
+                    new_value=new_thresh,
+                    reason=reason,
+                ))
+                adjustments.append(LearningAdjustment(
+                    parameter="ml.short_threshold",
+                    old_value=old_short_thresh,
+                    new_value=new_thresh,
+                    reason=reason,
+                ))
                 self.cfg.ml.long_threshold = new_thresh
                 self.cfg.ml.short_threshold = new_thresh
 
         # Relax thresholds if accuracy is very good
         if win_rate > 0.65 and sharpe > 1.5:
-            old_thresh = self.cfg.ml.long_threshold
-            new_thresh = max(0.50, old_thresh - 0.02)
-            if new_thresh != old_thresh:
-                adj = LearningAdjustment(
-                    parameter="ml.long_threshold",
-                    old_value=old_thresh,
-                    new_value=new_thresh,
-                    reason=f"Strong performance (WR={win_rate:.2%}, Sharpe={sharpe:.2f})",
+            old_long_thresh = self.cfg.ml.long_threshold
+            old_short_thresh = self.cfg.ml.short_threshold
+            new_thresh = max(0.50, old_long_thresh - 0.02)
+            if new_thresh != old_long_thresh:
+                reason = (
+                    f"Strong performance (WR={win_rate:.2%}, Sharpe={sharpe:.2f})"
                 )
-                adjustments.append(adj)
+                adjustments.append(LearningAdjustment(
+                    parameter="ml.long_threshold",
+                    old_value=old_long_thresh,
+                    new_value=new_thresh,
+                    reason=reason,
+                ))
+                adjustments.append(LearningAdjustment(
+                    parameter="ml.short_threshold",
+                    old_value=old_short_thresh,
+                    new_value=new_thresh,
+                    reason=reason,
+                ))
                 self.cfg.ml.long_threshold = new_thresh
                 self.cfg.ml.short_threshold = new_thresh
 

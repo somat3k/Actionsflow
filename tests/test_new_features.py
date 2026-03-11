@@ -30,8 +30,8 @@ class TestConfigTimeframes:
         assert cfg.data.primary_interval == "1m"
         assert cfg.data.secondary_interval == "5m"
         assert cfg.data.macro_interval == "15m"
-        assert cfg.data.hourly_interval == "1H"
-        assert cfg.data.daily_interval == "1D"
+        assert cfg.data.hourly_interval == "1h"
+        assert cfg.data.daily_interval == "1d"
 
     def test_hourly_interval_env_override(self, monkeypatch):
         monkeypatch.setenv("HOURLY_INTERVAL", "4H")
@@ -56,6 +56,16 @@ class TestConfigDualGemini:
         cfg = load_config()
         assert cfg.gemini.model == "gemini-2.0-flash"
         assert cfg.gemini.model_2 == "gemini-2.5-pro"
+
+
+class TestConfigModelWeights:
+    def test_model_weights_loaded_from_yaml(self):
+        cfg = load_config()
+        assert cfg.ml.model_weights["xgb"] == 0.30
+        assert cfg.ml.model_weights["gb"] == 0.10
+        assert cfg.ml.model_weights["rf"] == 0.20
+        assert cfg.ml.model_weights["lstm"] == 0.25
+        assert cfg.ml.model_weights["linear"] == 0.15
 
 
 # ── Gemini orchestrator tests ─────────────────────────────────────────────────
@@ -237,6 +247,19 @@ class TestEvaluatorNewMetrics:
         assert m.accuracy == m.win_rate
         assert abs(m.equity_growth_pct - m.total_return_pct) < 1e-6
 
+    def test_optional_kwargs_are_forwarded(self):
+        from src.evaluator import compute_metrics
+
+        m = compute_metrics(
+            [], 10_000.0, 10_000.0,
+            num_positions=5,
+            gemini_answer_time_avg_s=1.23,
+            action_time_avg_s=0.45,
+        )
+        assert m.num_positions == 5
+        assert m.gemini_answer_time_avg_s == 1.23
+        assert m.action_time_avg_s == 0.45
+
 
 # ── Data fetcher multi-timeframe tests ────────────────────────────────────────
 
@@ -252,8 +275,8 @@ class TestDataFetcherMultiTimeframe:
         assert "1m" in frames
         assert "5m" in frames
         assert "15m" in frames
-        assert "1H" in frames
-        assert "1D" in frames
+        assert "1h" in frames
+        assert "1d" in frames
 
     def test_new_symbols_have_funding_rate(self, monkeypatch):
         monkeypatch.setenv("TRADING_MODE", "test")

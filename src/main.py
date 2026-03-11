@@ -536,10 +536,22 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
 
     evaluator = Evaluator(cfg)
     trade_history = [asdict(t) for t in broker.trade_history]
+
+    # Retrieve cached timing metrics from the last signal cycle.
+    last_cycle = db.get_cache("signal:paper:last_cycle")
+    cached_gemini_time = 0.0
+    cached_action_time = 0.0
+    if isinstance(last_cycle, dict):
+        cached_gemini_time = float(last_cycle.get("avg_gemini_time_s", 0.0))
+        cached_action_time = float(last_cycle.get("avg_action_time_s", 0.0))
+
     metrics, adjustments = evaluator.evaluate(
         trade_history,
         initial_equity=cfg.paper_broker.initial_equity,
         final_equity=broker.equity,
+        num_positions=len(broker.positions),
+        gemini_answer_time_avg_s=cached_gemini_time,
+        action_time_avg_s=cached_action_time,
     )
 
     evaluator.print_report(metrics, adjustments)

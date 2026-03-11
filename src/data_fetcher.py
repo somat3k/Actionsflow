@@ -76,7 +76,7 @@ class HyperliquidDataFetcher:
         return df
 
     def fetch_multi_timeframe(self, symbol: str) -> Dict[str, pd.DataFrame]:
-        """Fetch candles for all configured timeframes (1m, 5m, 15m, 1H, 1D)."""
+        """Fetch candles for all configured timeframes (1m, 5m, 15m, 1h, 1d)."""
         cfg = self.cfg.data
         frames: Dict[str, pd.DataFrame] = {}
         for tf in [
@@ -272,7 +272,8 @@ class HyperliquidDataFetcher:
         """Return deterministic synthetic data for test/CI mode (TRADING_MODE=test)."""
         ptype = payload.get("type", "")
         if ptype == "candleSnapshot":
-            return self._synthetic_candles()
+            interval = payload.get("req", {}).get("interval", "15m")
+            return self._synthetic_candles(interval=interval)
         if ptype == "l2Book":
             return {
                 "levels": [
@@ -308,17 +309,20 @@ class HyperliquidDataFetcher:
         return None
 
     @staticmethod
-    def _synthetic_candles(n: int = 400) -> List[Dict]:
+    def _synthetic_candles(n: int = 400, interval: str = "15m") -> List[Dict]:
         """Generate deterministic synthetic OHLCV candle dicts for test mode.
 
         Uses a fixed random seed so results are reproducible across runs.
         Generates ``n`` candles (default 400), which is sufficient for all
         technical indicators produced by :func:`~src.utils.add_all_features`.
+
+        The ``interval`` parameter controls the candle spacing so each
+        timeframe has realistic timestamps in multi-timeframe tests.
         """
         rng = np.random.default_rng(42)
         candles: List[Dict] = []
         price = 40_000.0
-        interval_ms = 60_000 * 15  # 15-minute candles
+        interval_ms = interval_to_ms(interval)
         start_ms = 1_700_000_000_000
         for i in range(n):
             price *= 1.0 + float(rng.normal(0, 0.001))

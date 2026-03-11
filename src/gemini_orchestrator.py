@@ -60,7 +60,10 @@ class GeminiOrchestrator:
         self.gcfg = config.gemini
         self._model = None
         self._model_2 = None
+        self._api_key_1 = self.gcfg.api_key
+        self._api_key_2 = self.gcfg.api_key_2
         self._last_answer_times: List[float] = []
+        self._max_answer_times = 500
 
         if _GENAI_AVAILABLE and self.gcfg.api_key:
             genai.configure(api_key=self.gcfg.api_key)
@@ -72,6 +75,8 @@ class GeminiOrchestrator:
 
             if self.gcfg.api_key_2:
                 try:
+                    # Reconfigure with second API key for the secondary model.
+                    genai.configure(api_key=self.gcfg.api_key_2)
                     self._model_2 = genai.GenerativeModel(
                         model_name=self.gcfg.model_2,
                         system_instruction=_SYSTEM_PROMPT,
@@ -80,12 +85,16 @@ class GeminiOrchestrator:
                         "Gemini secondary model '%s' initialised",
                         self.gcfg.model_2,
                     )
+                    # Restore primary API key as the active configuration.
+                    genai.configure(api_key=self.gcfg.api_key)
                 except Exception as exc:
                     log.warning(
                         "Failed to initialise secondary Gemini model '%s': %s",
                         self.gcfg.model_2,
                         exc,
                     )
+                    # Restore primary API key on failure.
+                    genai.configure(api_key=self.gcfg.api_key)
         else:
             log.warning(
                 "Gemini unavailable (api_key=%s, library=%s) – using fallback heuristics",
@@ -327,6 +336,15 @@ class GeminiOrchestrator:
 
     def _call_gemini(self, prompt: str, model: Any = None) -> Optional[str]:
         active_model = model or self._model
+        # When using the secondary model, reconfigure with its API key.
+        use_secondary = (
+            model is not None
+            and model is self._model_2
+            and self._api_key_2
+            and _GENAI_AVAILABLE
+        )
+        if use_secondary:
+            genai.configure(api_key=self._api_key_2)
 
         def _generate() -> Optional[str]:
             gen_cfg = {
@@ -342,7 +360,7 @@ class GeminiOrchestrator:
         start = time.monotonic()
         try:
             result = _generate()
-            self._last_answer_times.append(time.monotonic() - start)
+            self._record_answer_time(time.monotonic() - start)
             return result
         except Exception as exc:
             failed_model = getattr(active_model, "model_name", self.gcfg.model)
@@ -350,13 +368,23 @@ class GeminiOrchestrator:
                 try:
                     active_model = self._model
                     result = _generate()
-                    self._last_answer_times.append(time.monotonic() - start)
+                    self._record_answer_time(time.monotonic() - start)
                     return result
                 except Exception as retry_exc:
                     log.error("Gemini API call failed after model switch: %s", retry_exc)
                     return None
             log.error("Gemini API call failed: %s", exc)
             return None
+        finally:
+            # Restore primary API key after secondary model calls.
+            if use_secondary and _GENAI_AVAILABLE:
+                genai.configure(api_key=self._api_key_1)
+
+    def _record_answer_time(self, elapsed: float) -> None:
+        """Append response time and keep only the last N samples."""
+        self._last_answer_times.append(elapsed)
+        if len(self._last_answer_times) > self._max_answer_times:
+            self._last_answer_times = self._last_answer_times[-self._max_answer_times:]
 
     @staticmethod
     def _is_model_not_found_error(exc: Exception) -> bool:

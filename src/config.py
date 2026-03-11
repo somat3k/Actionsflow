@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -73,8 +73,8 @@ class DataConfig:
     primary_interval: str = "1m"
     secondary_interval: str = "5m"
     macro_interval: str = "15m"
-    hourly_interval: str = "1H"
-    daily_interval: str = "1D"
+    hourly_interval: str = "1h"
+    daily_interval: str = "1d"
     lookback_candles: int = 500
 
 
@@ -86,6 +86,14 @@ class MLConfig:
     min_ensemble_agreement: float = 0.60
     model_save_dir: str = "models"
     retrain_interval_hours: int = 24
+    # Per-model weights loaded from YAML (keyed by model name)
+    model_weights: Dict[str, float] = field(default_factory=lambda: {
+        "xgb": 0.30,
+        "gb": 0.10,
+        "rf": 0.20,
+        "lstm": 0.25,
+        "linear": 0.15,
+    })
 
 
 @dataclass
@@ -232,14 +240,28 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         primary_interval=os.environ.get("PRIMARY_INTERVAL", intervals.get("primary", "1m")),
         secondary_interval=os.environ.get("SECONDARY_INTERVAL", intervals.get("secondary", "5m")),
         macro_interval=os.environ.get("MACRO_INTERVAL", intervals.get("macro", "15m")),
-        hourly_interval=os.environ.get("HOURLY_INTERVAL", intervals.get("hourly", "1H")),
-        daily_interval=os.environ.get("DAILY_INTERVAL", intervals.get("daily", "1D")),
+        hourly_interval=os.environ.get("HOURLY_INTERVAL", intervals.get("hourly", "1h")),
+        daily_interval=os.environ.get("DAILY_INTERVAL", intervals.get("daily", "1d")),
         lookback_candles=int(lookback.get("candles", 500)),
     )
 
     # ── ML ────────────────────────────────────────────────────
     signals = ml_raw.get("signals", {})
     training = ml_raw.get("training", {})
+    # Load per-model weights from YAML if present.
+    models_raw = ml_raw.get("models", {})
+    default_weights = {
+        "xgb": 0.30, "gb": 0.10, "rf": 0.20, "lstm": 0.25, "linear": 0.15,
+    }
+    yaml_name_map = {
+        "xgboost": "xgb", "gradient_boost": "gb", "random_forest": "rf",
+        "lstm": "lstm", "linear": "linear",
+    }
+    model_weights = dict(default_weights)
+    for yaml_name, internal_name in yaml_name_map.items():
+        model_cfg = models_raw.get(yaml_name, {})
+        if "weight" in model_cfg:
+            model_weights[internal_name] = float(model_cfg["weight"])
     ml = MLConfig(
         long_threshold=float(signals.get("long_threshold", 0.60)),
         short_threshold=float(signals.get("short_threshold", 0.60)),
@@ -247,6 +269,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         min_ensemble_agreement=float(signals.get("min_ensemble_agreement", 0.60)),
         model_save_dir=training.get("model_save_dir", "models"),
         retrain_interval_hours=int(training.get("retrain_interval_hours", 24)),
+        model_weights=model_weights,
     )
 
     # ── Gemini ────────────────────────────────────────────────

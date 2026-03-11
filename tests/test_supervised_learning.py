@@ -28,17 +28,23 @@ def test_accuracy_returns_zero_for_unknown_symbol():
 def test_evaluate_tightens_threshold_on_low_winrate():
     cfg = load_config()
     cfg.evaluation.min_win_rate = 0.50
-    old_threshold = cfg.ml.long_threshold
+    old_long = cfg.ml.long_threshold
+    old_short = cfg.ml.short_threshold
     slm = SupervisedLearningModule(cfg)
 
     trades = [{"pnl": -1.0}] * 20
     metrics = {"win_rate": 0.30, "sharpe_ratio": 0.5, "max_drawdown_pct": 0.10}
     adjustments = slm.evaluate_and_adjust(trades, metrics)
 
-    assert len(adjustments) >= 1
     thresh_adj = [a for a in adjustments if "threshold" in a.parameter]
-    assert len(thresh_adj) >= 1
-    assert cfg.ml.long_threshold > old_threshold
+    # Both long and short thresholds should be recorded
+    assert len(thresh_adj) >= 2
+    long_adj = [a for a in thresh_adj if a.parameter == "ml.long_threshold"]
+    short_adj = [a for a in thresh_adj if a.parameter == "ml.short_threshold"]
+    assert len(long_adj) == 1
+    assert len(short_adj) == 1
+    assert cfg.ml.long_threshold > old_long
+    assert cfg.ml.short_threshold > old_short
 
 
 def test_evaluate_relaxes_threshold_on_strong_performance():
@@ -52,8 +58,10 @@ def test_evaluate_relaxes_threshold_on_strong_performance():
     adjustments = slm.evaluate_and_adjust(trades, metrics)
 
     thresh_adj = [a for a in adjustments if "threshold" in a.parameter]
-    assert len(thresh_adj) >= 1
+    # Both long and short thresholds should be recorded
+    assert len(thresh_adj) >= 2
     assert cfg.ml.long_threshold < 0.70
+    assert cfg.ml.short_threshold < 0.70
 
 
 def test_save_and_load_state(tmp_path):

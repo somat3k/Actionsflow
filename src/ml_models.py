@@ -159,13 +159,7 @@ class QuantumEnsemble:
         # Per-timeframe models for epoch training
         self._tf_models: Dict[str, Dict[str, Any]] = {}
 
-        self._model_weights = {
-            "xgb": 0.30,
-            "gb": 0.10,
-            "rf": 0.20,
-            "lstm": 0.25,
-            "linear": 0.15,
-        }
+        self._model_weights = dict(self.ml_cfg.model_weights)
         self._training_accuracy: Dict[str, float] = {}
 
     # ── Per-timeframe epoch training ──────────────────────────────────────────
@@ -198,6 +192,7 @@ class QuantumEnsemble:
         scores: Dict[str, float] = {}
 
         # XGBoost
+        xgb_model = None
         if _XGB_AVAILABLE:
             xgb_model = xgb.XGBClassifier(
                 n_estimators=500, max_depth=6, learning_rate=0.05,

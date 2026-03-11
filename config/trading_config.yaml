@@ -91,8 +91,8 @@ data:
     primary: "1m"                     # Primary trading timeframe
     secondary: "5m"                   # Short-term confirmation
     macro: "15m"                      # Macro context
-    hourly: "1H"                      # Hourly trend context
-    daily: "1D"                       # Daily regime context
+    hourly: "1h"                      # Hourly trend context
+    daily: "1d"                       # Daily regime context
 
   # Lookback periods for feature engineering
   lookback:
