@@ -67,7 +67,7 @@ def _get_hyperliquid_private_key() -> Optional[str]:
     return os.environ.get("HYPERLIQUID_SECRET") or os.environ.get("HYPERLIQUID_PRIVATE_KEY")
 
 
-def _set_data_snapshot_end_ms() -> int:
+def _ensure_data_snapshot_end_ms() -> int:
     raw = os.environ.get("DATA_SNAPSHOT_END_MS")
     if raw:
         try:
@@ -1052,7 +1052,7 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
     mode = os.environ.get("TRADING_MODE", cfg.trading.mode)
 
     log.info("=== FULL PIPELINE CYCLE ===")
-    snapshot_end_ms = _set_data_snapshot_end_ms()
+    snapshot_end_ms = _ensure_data_snapshot_end_ms()
     log.info("Data snapshot end time locked to %s", snapshot_end_ms)
 
     steps = [
@@ -1100,15 +1100,8 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
 
     if mode == "live":
         trade_rc = run_live_signal(config_path)
-    else:
-        trade_rc = run_paper_signal(config_path)
-    if trade_rc != 0:
-        return trade_rc
-
-    if mode != "live":
-        eval_rc = run_evaluation(config_path)
-        if eval_rc != 0:
-            return eval_rc
+        if trade_rc != 0:
+            return trade_rc
 
     db.record_task_completion(
         task_name="full_cycle",
