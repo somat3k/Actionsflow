@@ -1051,7 +1051,7 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
 def run_full_cycle(config_path: Optional[Path] = None) -> int:
     """Run the full pipeline end-to-end on a consistent data snapshot.
 
-    Returns 0 on success; non-zero if any pipeline stage fails. Behaviour can be
+    Returns 0 on success; non-zero if any pipeline stage fails. Behavior can be
     influenced by DATA_SNAPSHOT_END_MS (freeze data), TRADING_ELIGIBILITY_OVERRIDE
     (force eligibility), and LIVE_TRADING_ENABLED (allow live execution).
     """
@@ -1068,7 +1068,7 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
         ("training", run_training),
         ("signal", run_paper_signal),
         ("evaluate", run_evaluation),
-        ("export-models", run_model_export),
+        ("export", run_model_export),
     ]
     for name, step in steps:
         rc = step(config_path)
@@ -1102,10 +1102,11 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
 
     if mode == "live":
         if not _is_live_trading_enabled():
-            log.warning("LIVE_TRADING_ENABLED not set; live trades will be dry-run")
-        trade_rc = run_live_signal(config_path)
-        if trade_rc != 0:
-            return trade_rc
+            log.warning("LIVE_TRADING_ENABLED not set; skipping live trading step")
+        else:
+            trade_rc = run_live_signal(config_path)
+            if trade_rc != 0:
+                return trade_rc
 
     db.record_task_completion(
         task_name="full_cycle",
