@@ -195,8 +195,24 @@ class SystemConfig:
 
 
 @dataclass
+class CacheConfig:
+    """Redis cache configuration.
+
+    When ``redis_url`` is empty the embedded ``fakeredis`` backend is used
+    automatically – no external Redis server is required.
+    Set ``REDIS_URL`` in the environment to connect to an external instance.
+    """
+
+    enabled: bool = True
+    redis_url: str = ""          # Empty = use embedded fakeredis
+    default_ttl_seconds: int = 3600   # 1 hour default TTL; 0 = no expiry
+    namespace: str = "qt"
+
+
+@dataclass
 class AppConfig:
     system: SystemConfig = field(default_factory=SystemConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
     data: DataConfig = field(default_factory=DataConfig)
     ml: MLConfig = field(default_factory=MLConfig)
@@ -227,6 +243,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             raw = yaml.safe_load(fh) or {}
 
     system_raw = raw.get("system", {})
+    cache_raw = raw.get("cache", {})
     trading_raw = raw.get("trading", {})
     data_raw = raw.get("data", {})
     ml_raw = raw.get("ml", {})
@@ -486,6 +503,15 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         stabs_pierce_sharpe_threshold=float(stabs_raw.get("pierce_sharpe_threshold", 0.5)),
     )
 
+    # ── Cache (Redis) ─────────────────────────────────────────
+    _cache_ttl_raw = cache_raw.get("default_ttl_seconds", 3600)
+    cache = CacheConfig(
+        enabled=bool(cache_raw.get("enabled", True)),
+        redis_url=os.environ.get("REDIS_URL", cache_raw.get("redis_url", "")),
+        default_ttl_seconds=int(_cache_ttl_raw) if _cache_ttl_raw is not None else 3600,
+        namespace=cache_raw.get("namespace", "qt"),
+    )
+
     # ── System ────────────────────────────────────────────────
     system = SystemConfig(
         name=system_raw.get("name", "Quantum Trader"),
@@ -498,6 +524,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
 
     return AppConfig(
         system=system,
+        cache=cache,
         trading=trading,
         data=data,
         ml=ml,
