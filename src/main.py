@@ -154,6 +154,150 @@ def _resolve_training_markets(cfg: AppConfig) -> List[MarketConfig]:
     return [market for market in cfg.trading.markets if market.symbol.upper() in allowed]
 
 
+def _build_multiplex_signal(
+    cfg: AppConfig,
+    ensemble: Any,
+    delegation_agent: Any,
+    snapshot: Dict[str, Any],
+    prior_regime: str = "unknown",
+) -> Dict[str, Any]:
+    """Generate a multi-timeframe ML signal from snapshot candles.
+
+    For each configured trading timeframe (1m, 5m, 15m, 1h) runs ensemble
+    inference on the available candle data.  Uses the per-timeframe model when
+    available (epoch / MTF training), otherwise uses the global ``predict()``.
+    The predictions from all available timeframes are combined via
+    ``combined_decision()``, with higher timeframes carrying more weight.
+
+    If fewer than two timeframes are available the function falls back to
+    ``delegation_agent.predict()`` using the primary timeframe data.
+    The ensemble-agreement gate (``cfg.ml.min_ensemble_agreement``) is applied
+    to the combined result so that weak multi-timeframe consensus produces a
+    flat signal instead of a noisy long/short.
+
+    Args:
+        cfg:               Application configuration.
+        ensemble:          Trained ``QuantumEnsemble`` instance.
+        delegation_agent:  ``ModelDelegationAgent`` fallback.
+        snapshot:          Market data snapshot dict from ``fetch_all_market_data``.
+        prior_regime:      Cached regime label from the previous cycle.
+
+    Returns:
+        Signal dict with at minimum ``signal``, ``confidence``, ``agreement``,
+        and ``delegated_to`` keys.
+    """
+    trading_tfs = [
+        cfg.data.primary_interval,
+        cfg.data.secondary_interval,
+        cfg.data.macro_interval,
+        cfg.data.hourly_interval,
+    ]
+    candles = snapshot.get("candles", {})
+    tf_predictions: Dict[str, Any] = {}
+
+    for tf in trading_tfs:
+        df_tf = candles.get(tf)
+        if df_tf is None or df_tf.empty:
+            continue
+        try:
+            # Prefer per-timeframe model when available (MTF epoch training).
+            if ensemble.has_timeframe_model(tf):
+                pred = ensemble.predict_timeframe(df_tf, tf)
+                pred.setdefault("timeframe", tf)
+            else:
+                pred = ensemble.predict(df_tf)
+                pred["timeframe"] = tf
+            tf_predictions[tf] = pred
+        except Exception as exc:
+            log.debug("Multiplex prediction skipped for %s: %s", tf, exc)
+
+    if len(tf_predictions) >= 2:
+        ml_signal = ensemble.combined_decision(tf_predictions)
+        # Apply ensemble-agreement gate (same semantics as single-TF predict).
+        if ml_signal.get("agreement", 1.0) < cfg.ml.min_ensemble_agreement:
+            ml_signal["signal"] = 0
+            ml_signal["confidence"] = ml_signal.get("flat_prob", 1.0)
+        ml_signal["delegated_to"] = "multiplex"
+        return ml_signal
+
+    # Fewer than two timeframes – fall back to delegation agent.
+    primary_df = candles.get(cfg.data.primary_interval)
+    if primary_df is not None and not primary_df.empty:
+        return delegation_agent.predict(primary_df, regime=prior_regime)
+    for df_tf in candles.values():
+        if not df_tf.empty:
+            return delegation_agent.predict(df_tf, regime=prior_regime)
+    return {"signal": 0, "confidence": 0.0, "agreement": 0.0, "delegated_to": "none"}
+
+
+def _update_model_weights_from_evaluation(
+    cfg: AppConfig,
+    db: DatabaseManager,
+    metrics: Any,
+) -> None:
+    """Apply a reinforcement-learning weight update to all saved models.
+
+    Loads per-symbol training accuracy scores from the database cache and
+    applies ``QuantumEnsemble.apply_reinforcement`` with a small step size.
+    The reward for each model is its validation accuracy.  When the overall
+    performance is poor (win rate below threshold), the step size is doubled
+    so the ensemble adapts more aggressively.
+
+    This creates a closed feedback loop:
+      train → signal → evaluate → adjust weights → train …
+
+    The ``QuantumEnsemble`` import is deferred so that the evaluate path does
+    not trigger ML-model loading unless training scores are actually cached.
+
+    Args:
+        cfg:     Application configuration.
+        db:      Database manager for cache access.
+        metrics: Latest ``PerformanceMetrics`` from ``Evaluator.evaluate``.
+    """
+    training_scores = db.get_cache("training:last_scores")
+    if not isinstance(training_scores, dict) or not training_scores:
+        log.debug("No cached training scores – skipping evaluation-driven weight update")
+        return
+
+    # Deferred import: keeps the evaluate path free of ML-model imports when
+    # there are no cached training scores to work with.
+    from src.ml_models import QuantumEnsemble  # noqa: PLC0415
+
+    # Use a larger alpha when performance is weak so the ensemble adapts faster.
+    base_alpha = cfg.ml.reinforcement_alpha
+    win_rate = getattr(metrics, "win_rate", 0.0)
+    alpha = base_alpha * 2.0 if win_rate < cfg.evaluation.min_win_rate else base_alpha
+
+    ensemble = QuantumEnsemble(cfg)
+    updated_symbols: List[str] = []
+    for symbol, scores in training_scores.items():
+        if not isinstance(scores, dict) or not scores:
+            continue
+        if not ensemble.load(symbol):
+            log.debug("Cannot load model for %s – skipping weight update", symbol)
+            continue
+        updated_weights = ensemble.apply_reinforcement(scores, alpha)
+        try:
+            ensemble.save(symbol)
+            updated_symbols.append(symbol)
+            log.info(
+                "Evaluation-driven weight update for %s (alpha=%.3f): %s",
+                symbol, alpha, updated_weights,
+            )
+        except Exception as exc:
+            log.warning("Failed to save updated weights for %s: %s", symbol, exc)
+
+    if updated_symbols:
+        db.set_cache(
+            "evaluation:weight_update",
+            {
+                "symbols": updated_symbols,
+                "alpha": alpha,
+                "win_rate": win_rate,
+            },
+        )
+
+
 def _ensure_model_ready(
     cfg: AppConfig,
     db: DatabaseManager,
@@ -657,15 +801,19 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         current_price = float(df["close"].iloc[-1])
         atr = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns else current_price * 0.01
 
-        # ML signal via delegation agent (uses cached regime from last cycle)
+        # Multi-timeframe ML signal: combines 1m / 5m / 15m / 1h predictions.
+        # Falls back to delegation agent when fewer than two timeframes are
+        # available (e.g. first run, stub data, or missing intervals).
         prior_regime = cached_regimes.get(symbol, "unknown")
-        ml_signal = delegation_agent.predict(df, regime=prior_regime)
+        ml_signal = _build_multiplex_signal(
+            cfg, ensemble, delegation_agent, snapshot, prior_regime
+        )
         log.info(
             "%s ML signal: %s (conf=%.3f, agree=%.2f, delegated_to=%s)",
             symbol,
             {0: "FLAT", 1: "LONG", 2: "SHORT"}[ml_signal["signal"]],
             ml_signal["confidence"],
-            ml_signal["agreement"],
+            ml_signal.get("agreement", 0.0),
             ml_signal.get("delegated_to", "ensemble"),
         )
 
@@ -711,6 +859,27 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
 
         # Check existing position
         existing = broker.get_open_position(symbol)
+
+        # Proactive risk-based closure: when the AI orchestrator flags elevated
+        # risk conditions AND the current position is losing money, close it
+        # immediately to prevent further losses (capital preservation).
+        risk_flags = gemini_analysis.get("risk_flags", [])
+        if risk_flags and existing and existing.unrealised_pnl < 0:
+            log.warning(
+                "Closing losing %s position proactively – risk flags: %s "
+                "(unrealised=%.2f USD)",
+                symbol, risk_flags, existing.unrealised_pnl,
+            )
+            broker.close_position(existing.position_id, current_price, "risk_flag")
+            actions_taken.append(
+                {
+                    "action": "risk_close",
+                    "symbol": symbol,
+                    "price": current_price,
+                    "risk_flags": risk_flags,
+                }
+            )
+            existing = None
 
         # Execute signal
         if validated_signal in (1, 2):
@@ -863,7 +1032,10 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
         atr = float(df.get("atr_14", df["close"] * 0.01).iloc[-1])
 
         prior_regime = cached_regimes.get(symbol, "unknown")
-        ml_signal = delegation_agent.predict(df, regime=prior_regime)
+        # Multi-timeframe signal: combines 1m / 5m / 15m / 1h predictions.
+        ml_signal = _build_multiplex_signal(
+            cfg, ensemble, delegation_agent, snapshot, prior_regime
+        )
         gemini_analysis = ai_orchestrator.analyse_market_context(symbol, ml_signal, snapshot)
         validated_signal = gemini_analysis.get("validated_signal", ml_signal["signal"])
         regime = gemini_analysis.get("regime", "unknown")
@@ -873,6 +1045,31 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
         risk_flags = gemini_analysis.get("risk_flags", [])
         if risk_flags:
             log.warning("Risk flags for %s: %s", symbol, risk_flags)
+
+        # Proactive risk-based closure for live positions: when the AI flags
+        # elevated risk AND the position is losing money, close it immediately
+        # to protect capital (mirrors the same logic in run_paper_signal).
+        if risk_flags:
+            live_pos_sym = [
+                p for p in open_positions
+                if p.get("position", {}).get("coin") == symbol
+            ]
+            for live_pos in live_pos_sym:
+                pos_data = live_pos.get("position", {})
+                unrealised_pnl = float(pos_data.get("unrealizedPnl", 0.0))
+                if unrealised_pnl < 0:
+                    side = pos_data.get("stype", "long")
+                    size_contracts = abs(float(pos_data.get("szi", 0.0)))
+                    if size_contracts > 0:
+                        log.warning(
+                            "Closing losing live %s %s position proactively "
+                            "– risk flags: %s (unrealised=%.2f USD)",
+                            symbol, side, risk_flags, unrealised_pnl,
+                        )
+                        live_trader.close_position(symbol, side, size_contracts, current_price)
+                        # Refresh open positions count after closure.
+                        open_positions = live_trader.get_open_positions()
+                        n_open = len(open_positions)
 
         perf = compute_metrics(trade_log[-50:], cfg.trading.initial_equity, cfg.trading.initial_equity)
         lev_rec = ai_orchestrator.recommend_leverage(
@@ -993,6 +1190,14 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
         results_dir / "evaluation_report.json",
         label=f"eval_{utc_now().strftime('%Y%m%d_%H%M')}",
     )
+
+    # Evaluation-driven model weight update.
+    # Re-weight each symbol's ensemble using cached per-model training accuracy
+    # so that better-performing models carry more influence in the next signal
+    # cycle.  The reinforcement step size is config-driven via
+    # cfg.ml.reinforcement_alpha (and may be adaptively increased, e.g. doubled
+    # on poor win rate) to keep adjustments stable across evaluation windows.
+    _update_model_weights_from_evaluation(cfg, db, metrics)
 
     # Gemini performance review
     ai_orchestrator = MultiAIOrchestrator(cfg)
