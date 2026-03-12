@@ -392,7 +392,7 @@ evaluation:
 
   # Target daily trade volume (paper trading). Defaults align with high-frequency
   # evaluation targets. WARNING: typical strategies should tune this much lower
-  # (e.g., 5-20 trades/day); set to 0 to disable adjustments.
+  # (e.g., 10-50 trades/day); set to 0 to disable adjustments.
   trade_volume:
     min_trades_per_day: 700
     max_trades_per_day: 2000

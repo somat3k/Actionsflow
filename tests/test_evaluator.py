@@ -188,6 +188,7 @@ class TestEvaluatorEvaluate:
             for i in range(4)
         ]
         m, adj = evaluator.evaluate(trades, 10_000.0, 10_200.0)
+        assert evaluator._passes_thresholds(m) is True
         threshold_adj = [a for a in adj if a["parameter"] == "ml.long_threshold"]
         assert threshold_adj
         assert threshold_adj[0]["new_value"] < threshold_adj[0]["old_value"]

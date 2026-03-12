@@ -333,6 +333,7 @@ class Evaluator:
                 reason="Zero trades recorded: relaxing signal filters to locate opportunities",
             )
 
+        # Guard against extremely sparse histories where trade rate is near zero.
         if m.trades_per_day <= self._MIN_TRADE_RATE_THRESHOLD:
             log.info(
                 "Trade volume metrics unavailable or too sparse (%.4f/day); "
