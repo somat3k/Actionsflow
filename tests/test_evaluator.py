@@ -12,6 +12,10 @@ import pytest
 from src.config import load_config
 from src.evaluator import Evaluator, PerformanceMetrics, compute_metrics
 
+MS_PER_MINUTE = 60_000
+MS_PER_HOUR = 60 * MS_PER_MINUTE
+MS_PER_DAY = 24 * MS_PER_HOUR
+
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -31,7 +35,7 @@ def _make_trade(
     symbol="BTC",
     leverage=15,
     entry_time_ms=1_700_000_000_000,
-    exit_time_ms=1_700_000_000_000 + 3_600_000,
+    exit_time_ms=1_700_000_000_000 + MS_PER_HOUR,
 ) -> dict:
     """Minimal trade dict matching ClosedTrade fields."""
     return {
@@ -173,8 +177,8 @@ class TestEvaluatorEvaluate:
         trades = [
             _make_trade(
                 pnl=50.0,
-                entry_time_ms=start + i * 86_400_000,
-                exit_time_ms=start + i * 86_400_000 + 3_600_000,
+                entry_time_ms=start + i * MS_PER_DAY,
+                exit_time_ms=start + i * MS_PER_DAY + MS_PER_HOUR,
             )
             for i in range(4)
         ]
@@ -190,8 +194,8 @@ class TestEvaluatorEvaluate:
         trades = [
             _make_trade(
                 pnl=50.0,
-                entry_time_ms=start + i * 300_000,
-                exit_time_ms=start + i * 300_000 + 60_000,
+                entry_time_ms=start + i * 5 * MS_PER_MINUTE,
+                exit_time_ms=start + i * 5 * MS_PER_MINUTE + MS_PER_MINUTE,
             )
             for i in range(10)
         ]
