@@ -18,6 +18,8 @@ class _FakeResponse:
 def test_model_not_found_auto_switches_to_supported_fallback(monkeypatch):
     from src import gemini_orchestrator as go
 
+    go._MODEL_LIST_CACHE.clear()
+
     cfg = load_config()
     cfg.gemini.api_key = "test-key"
     cfg.gemini.model = "gemini-1.5-pro"
@@ -68,6 +70,8 @@ def test_model_not_found_auto_switches_to_supported_fallback(monkeypatch):
 def test_model_not_found_without_supported_model_uses_heuristic_fallback(monkeypatch):
     from src import gemini_orchestrator as go
 
+    go._MODEL_LIST_CACHE.clear()
+
     cfg = load_config()
     cfg.gemini.api_key = "test-key"
     cfg.gemini.model = "gemini-1.5-pro"
@@ -105,6 +109,8 @@ def test_model_not_found_without_supported_model_uses_heuristic_fallback(monkeyp
 
 def test_model_not_found_with_only_same_model_uses_heuristic_fallback(monkeypatch):
     from src import gemini_orchestrator as go
+
+    go._MODEL_LIST_CACHE.clear()
 
     cfg = load_config()
     cfg.gemini.api_key = "test-key"

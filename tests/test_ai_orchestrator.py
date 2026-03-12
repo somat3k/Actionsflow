@@ -13,6 +13,7 @@ def test_provider_order_includes_openai(monkeypatch):
     monkeypatch.setattr(ao, "GeminiOrchestrator", _FakeGeminiOrchestrator)
 
     cfg = load_config()
+    cfg.gemini.api_key = "gemini-key"
     cfg.openrouter.api_key = "openrouter-key"
     cfg.openai.api_key = "openai-key"
     cfg.groq.api_key = "groq-key"
@@ -28,6 +29,7 @@ def test_provider_order_excludes_openai_without_key(monkeypatch):
     monkeypatch.setattr(ao, "GeminiOrchestrator", _FakeGeminiOrchestrator)
 
     cfg = load_config()
+    cfg.gemini.api_key = "gemini-key"
     cfg.openrouter.api_key = "openrouter-key"
     cfg.openai.api_key = ""
     cfg.groq.api_key = "groq-key"

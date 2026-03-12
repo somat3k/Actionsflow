@@ -28,8 +28,14 @@ try:
 
     _GENAI_AVAILABLE = True
 except ImportError:
+    genai = None  # type: ignore[assignment]
     _GENAI_AVAILABLE = False
     log.warning("google-generativeai not installed – Gemini orchestrator disabled")
+
+# Module-level cache for supported model lists, keyed by API key.
+# Entries expire after _MODEL_LIST_CACHE_TTL seconds to avoid stale data.
+_MODEL_LIST_CACHE: Dict[str, Dict] = {}
+_MODEL_LIST_CACHE_TTL = 3600  # 1 hour
 
 
 _SYSTEM_PROMPT = textwrap.dedent("""
@@ -80,7 +86,7 @@ class GeminiOrchestrator:
 
         if _GENAI_AVAILABLE and self.gcfg.api_key:
             genai.configure(api_key=self.gcfg.api_key)
-            available_primary = self._list_supported_models()
+            available_primary = self._list_supported_models(self.gcfg.api_key)
             selected_primary = self._select_preferred_model(
                 available_primary,
                 self._PRIMARY_MODEL_PREFERENCE,
@@ -103,7 +109,7 @@ class GeminiOrchestrator:
                 try:
                     # Reconfigure with second API key for the secondary model.
                     genai.configure(api_key=self.gcfg.api_key_2)
-                    available_secondary = self._list_supported_models()
+                    available_secondary = self._list_supported_models(self.gcfg.api_key_2)
                     selected_secondary = self._select_preferred_model(
                         available_secondary,
                         self._SECONDARY_MODEL_PREFERENCE,
@@ -431,7 +437,11 @@ class GeminiOrchestrator:
         return "404" in msg and "model" in msg and "not found" in msg and "generatecontent" in msg
 
     @staticmethod
-    def _list_supported_models() -> List[str]:
+    def _list_supported_models(api_key: str = "") -> List[str]:
+        now = time.time()
+        cache_entry = _MODEL_LIST_CACHE.get(api_key)
+        if cache_entry and (now - cache_entry["timestamp"]) < _MODEL_LIST_CACHE_TTL:
+            return cache_entry["models"]
         try:
             available = []
             for model in genai.list_models():
@@ -443,6 +453,7 @@ class GeminiOrchestrator:
                 }
                 if name.startswith("models/gemini") and "generatecontent" in methods:
                     available.append(name.replace("models/", ""))
+            _MODEL_LIST_CACHE[api_key] = {"models": available, "timestamp": now}
             return available
         except Exception as exc:
             log.warning("Failed to list Gemini models: %s", exc)
@@ -461,10 +472,15 @@ class GeminiOrchestrator:
             for candidate in available:
                 if candidate.startswith(preferred) and candidate != exclude:
                     return candidate
-        return configured
+        # As a final fallback, choose the first available model that is not excluded.
+        for candidate in available:
+            if candidate != exclude:
+                return candidate
+        # No suitable model found; return empty string to signal "no match".
+        return ""
 
     def _switch_to_supported_model(self, failed_model: str) -> bool:
-        available = self._list_supported_models()
+        available = self._list_supported_models(self.gcfg.api_key)
         if not available:
             return False
 
