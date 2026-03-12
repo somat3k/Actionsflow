@@ -4,7 +4,7 @@ Uses Gemini to analyse market context, validate ML signals, recommend leverage,
 review performance, and suggest trading strategy adjustments.
 
 Supports dual-model orchestration:
-  - gemini-2.0-flash (GEMINI_API_KEY): fast analysis for all symbols
+  - gemini-2.5-pro (GEMINI_API_KEY): primary analysis for all symbols
   - gemini-2.5-pro (GEMINI_API_KEY2): deep reasoning for performance review
 """
 
@@ -51,7 +51,7 @@ class GeminiOrchestrator:
     """Interfaces with Google Gemini AI to orchestrate trading decisions.
 
     Supports dual-model orchestration using two API keys:
-      - Primary (gemini-2.0-flash): fast market analysis and signal validation
+      - Primary (gemini-2.5-pro): market analysis and signal validation
       - Secondary (gemini-2.5-pro): deep performance review and strategy tuning
     """
 
@@ -410,7 +410,6 @@ class GeminiOrchestrator:
             preferred_order = (
                 "gemini-2.5-pro",
                 "gemini-2.5-flash",
-                "gemini-2.0-flash",
                 "gemini-1.5-pro",
                 "gemini-1.5-flash",
             )

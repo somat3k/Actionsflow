@@ -122,7 +122,7 @@ class MLConfig:
 class GeminiConfig:
     api_key: str = ""
     api_key_2: str = ""
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-pro"
     model_2: str = "gemini-2.5-pro"
     temperature: float = 0.1
     max_output_tokens: int = 2048
@@ -133,6 +133,16 @@ class GroqConfig:
     api_key: str = ""
     model: str = "llama3-70b-8192"
     api_url: str = "https://api.groq.com/openai/v1/chat/completions"
+    temperature: float = 0.1
+    max_output_tokens: int = 2048
+    timeout_seconds: int = 30
+
+
+@dataclass
+class OpenAIConfig:
+    api_key: str = ""
+    model: str = "gpt-4o-mini"
+    api_url: str = "https://api.openai.com/v1/chat/completions"
     temperature: float = 0.1
     max_output_tokens: int = 2048
     timeout_seconds: int = 30
@@ -192,6 +202,7 @@ class AppConfig:
     ml: MLConfig = field(default_factory=MLConfig)
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
     groq: GroqConfig = field(default_factory=GroqConfig)
+    openai: OpenAIConfig = field(default_factory=OpenAIConfig)
     openrouter: OpenRouterConfig = field(default_factory=OpenRouterConfig)
     paper_broker: PaperBrokerConfig = field(default_factory=PaperBrokerConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
@@ -221,6 +232,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     ml_raw = raw.get("ml", {})
     gemini_raw = raw.get("gemini", {})
     groq_raw = raw.get("groq", {})
+    openai_raw = raw.get("openai", {})
     openrouter_raw = raw.get("openrouter", {})
     paper_raw = raw.get("paper_broker", {})
     eval_raw = raw.get("evaluation", {})
@@ -388,7 +400,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     gemini = GeminiConfig(
         api_key=os.environ.get("GEMINI_API_KEY", ""),
         api_key_2=os.environ.get("GEMINI_API_KEY2", ""),
-        model=gemini_raw.get("model", "gemini-2.0-flash"),
+        model=gemini_raw.get("model", "gemini-2.5-pro"),
         model_2=gemini_raw.get("model_2", "gemini-2.5-pro"),
         temperature=float(gemini_raw.get("temperature", 0.1)),
         max_output_tokens=int(gemini_raw.get("max_output_tokens", 2048)),
@@ -407,6 +419,22 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         ),
         timeout_seconds=int(
             os.environ.get("GROQ_TIMEOUT_SECONDS", groq_raw.get("timeout_seconds", 30))
+        ),
+    )
+
+    openai = OpenAIConfig(
+        api_key=os.environ.get("OPENAI_API_KEY", ""),
+        model=os.environ.get("OPENAI_MODEL", openai_raw.get("model", "gpt-4o-mini")),
+        api_url=os.environ.get(
+            "OPENAI_API_URL",
+            openai_raw.get("api_url", "https://api.openai.com/v1/chat/completions"),
+        ),
+        temperature=float(os.environ.get("OPENAI_TEMPERATURE", openai_raw.get("temperature", 0.1))),
+        max_output_tokens=int(
+            os.environ.get("OPENAI_MAX_TOKENS", openai_raw.get("max_output_tokens", 2048))
+        ),
+        timeout_seconds=int(
+            os.environ.get("OPENAI_TIMEOUT_SECONDS", openai_raw.get("timeout_seconds", 30))
         ),
     )
 
@@ -475,6 +503,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         ml=ml,
         gemini=gemini,
         groq=groq,
+        openai=openai,
         openrouter=openrouter,
         paper_broker=paper_broker,
         evaluation=evaluation,

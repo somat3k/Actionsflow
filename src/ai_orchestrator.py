@@ -1,5 +1,5 @@
 """
-Multi-provider AI orchestrator for Gemini, Groq, and OpenRouter.
+Multi-provider AI orchestrator for Gemini, OpenAI, OpenRouter, and Groq.
 Uses Gemini as a fallback when other providers are unavailable.
 """
 
@@ -21,7 +21,7 @@ log = get_logger(__name__)
 
 
 class OpenAICompatibleOrchestrator:
-    """OpenAI-compatible chat API wrapper for Groq/OpenRouter."""
+    """OpenAI-compatible chat API wrapper for OpenAI/Groq/OpenRouter."""
 
     def __init__(self, name: str, config: AppConfig, provider_cfg: Any) -> None:
         self.name = name
@@ -153,7 +153,7 @@ class GeminiProvider:
 
 
 class MultiAIOrchestrator:
-    """Orchestrates Gemini, Groq, and OpenRouter providers with fallback."""
+    """Orchestrates Gemini, OpenAI, OpenRouter, and Groq providers with fallback."""
 
     def __init__(self, config: AppConfig) -> None:
         self.cfg = config
@@ -216,13 +216,17 @@ class MultiAIOrchestrator:
         if gemini_provider.available:
             providers.append(gemini_provider)
 
-        groq_provider = OpenAICompatibleOrchestrator("Groq", config, config.groq)
-        if groq_provider.available:
-            providers.append(groq_provider)
-
         openrouter_provider = OpenAICompatibleOrchestrator("OpenRouter", config, config.openrouter)
         if openrouter_provider.available:
             providers.append(openrouter_provider)
+
+        openai_provider = OpenAICompatibleOrchestrator("OpenAI", config, config.openai)
+        if openai_provider.available:
+            providers.append(openai_provider)
+
+        groq_provider = OpenAICompatibleOrchestrator("Groq", config, config.groq)
+        if groq_provider.available:
+            providers.append(groq_provider)
         return providers
 
     def _collect(self, method: str, *args) -> List[Dict[str, Any]]:
