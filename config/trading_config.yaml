@@ -19,9 +19,9 @@ system:
 # To connect to an external Redis instance set REDIS_URL or
 # fill in redis_url below (e.g. "redis://localhost:6379/0").
 cache:
-  enabled: true
+  enabled: true               # set to false to disable Redis caching entirely
   redis_url: ""               # empty = use embedded fakeredis; or set REDIS_URL env var
-  default_ttl_seconds: 3600   # 1 hour; set to 0 for no expiry
+  default_ttl_seconds: 3600   # TTL in seconds (0 = no expiry)
   namespace: "qt"
 
 # ── Trading Mode ────────────────────────────────────────────

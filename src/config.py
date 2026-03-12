@@ -508,7 +508,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     cache = CacheConfig(
         enabled=bool(cache_raw.get("enabled", True)),
         redis_url=os.environ.get("REDIS_URL", cache_raw.get("redis_url", "")),
-        default_ttl_seconds=int(_cache_ttl_raw) if _cache_ttl_raw else 3600,
+        default_ttl_seconds=int(_cache_ttl_raw) if _cache_ttl_raw is not None else 3600,
         namespace=cache_raw.get("namespace", "qt"),
     )
 

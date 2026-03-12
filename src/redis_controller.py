@@ -61,6 +61,9 @@ class RedisController:
         server.
     default_ttl:
         Seconds a cached entry lives before expiry.  ``None`` means no expiry.
+    enabled:
+        When ``False`` the controller is inert – all reads return ``None`` and
+        all writes are no-ops.  Useful for disabling the cache layer via config.
     """
 
     def __init__(
@@ -68,11 +71,16 @@ class RedisController:
         namespace: str = "qt",
         url: Optional[str] = None,
         default_ttl: Optional[int] = 3600,
+        enabled: bool = True,
     ) -> None:
         self.namespace = namespace
         self.default_ttl = default_ttl
         self._client: Any = None
         self._embedded: bool = False
+
+        if not enabled:
+            log.info("RedisController: cache disabled – running in no-op mode")
+            return
 
         resolved_url = url or os.environ.get("REDIS_URL")
 

@@ -52,12 +52,22 @@ log = get_logger(__name__)
 def _build_db_manager(cfg) -> DatabaseManager:
     db_path = Path(cfg.system.state_dir) / cfg.system.database_file
     cache_cfg = getattr(cfg, "cache", None)
+    cache_enabled: bool = True
     redis_url: Optional[str] = None
     cache_ttl: Optional[int] = 3600
+    namespace: str = "qt"
     if cache_cfg is not None:
+        cache_enabled = bool(cache_cfg.enabled)
+        namespace = cache_cfg.namespace or "qt"
         redis_url = cache_cfg.redis_url or None
         cache_ttl = cache_cfg.default_ttl_seconds if cache_cfg.default_ttl_seconds > 0 else None
-    return DatabaseManager(db_path, redis_url=redis_url, cache_ttl=cache_ttl)
+    return DatabaseManager(
+        db_path,
+        redis_url=redis_url,
+        cache_ttl=cache_ttl,
+        cache_enabled=cache_enabled,
+        namespace=namespace,
+    )
 
 
 def _print_github_summary(text: str) -> None:

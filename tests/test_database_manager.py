@@ -154,3 +154,22 @@ def test_close_releases_redis(tmp_path):
     assert db.redis.is_available
     db.close()
     assert not db.redis.is_available
+
+
+def test_cache_disabled_redis_not_used(tmp_path):
+    """When cache_enabled=False, Redis must not be initialised and SQLite still works."""
+    db = DatabaseManager(tmp_path / "state.db", cache_enabled=False)
+    assert not db.redis.is_available
+
+    # set_cache/get_cache must still work via SQLite alone
+    db.set_cache("disabled-key", {"ok": True})
+    assert db.get_cache("disabled-key") == {"ok": True}
+
+
+def test_custom_namespace_is_forwarded(tmp_path):
+    """namespace passed to DatabaseManager must be used by the Redis controller."""
+    db = DatabaseManager(tmp_path / "state.db", namespace="myns")
+    assert db.redis.namespace == "myns"
+    db.set_cache("ns-key", {"v": 1})
+    # Verify the key is stored under the custom namespace in Redis
+    assert db.redis.exists("ns-key")

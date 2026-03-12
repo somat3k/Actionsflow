@@ -153,3 +153,24 @@ def test_close_disables_operations():
     assert ctrl.set("after-close", "x") is False
     assert ctrl.ping() is False
     assert ctrl.keys() == []
+
+
+# ---------------------------------------------------------------------------
+# Disabled mode (enabled=False)
+# ---------------------------------------------------------------------------
+
+def test_disabled_controller_is_not_available():
+    ctrl = RedisController(namespace="test", enabled=False)
+    assert not ctrl.is_available
+    assert not ctrl.ping()
+
+
+def test_disabled_controller_returns_safe_defaults():
+    ctrl = RedisController(namespace="test", enabled=False)
+    assert ctrl.get("k") is None
+    assert ctrl.set("k", "v") is False
+    assert ctrl.delete("k") is False
+    assert not ctrl.exists("k")
+    assert ctrl.ttl("k") == -2
+    assert ctrl.keys() == []
+    assert ctrl.flush() == 0

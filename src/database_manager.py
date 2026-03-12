@@ -49,17 +49,21 @@ class DatabaseManager:
         db_path: Path,
         redis_url: Optional[str] = None,
         cache_ttl: Optional[int] = 3600,
+        cache_enabled: bool = True,
+        namespace: str = "qt",
     ) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
         self._redis = RedisController(
-            namespace="qt",
+            namespace=namespace,
             url=redis_url,
             default_ttl=cache_ttl,
+            enabled=cache_enabled,
         )
         log.debug(
-            "DatabaseManager: Redis backend=%s embedded=%s",
+            "DatabaseManager: cache_enabled=%s Redis backend=%s embedded=%s",
+            cache_enabled,
             "available" if self._redis.is_available else "disabled",
             self._redis.is_embedded,
         )
