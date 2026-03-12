@@ -167,7 +167,7 @@ def _build_multiplex_signal(
     inference on the available candle data.  Uses the per-timeframe model when
     available (epoch / MTF training), otherwise uses the global ``predict()``.
     The predictions from all available timeframes are combined via
-    ``combined_decision()``, giving higher-resolution timeframes more weight.
+    ``combined_decision()``, with higher timeframes carrying more weight.
 
     If fewer than two timeframes are available the function falls back to
     ``delegation_agent.predict()`` using the primary timeframe data.
@@ -1046,6 +1046,31 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
         if risk_flags:
             log.warning("Risk flags for %s: %s", symbol, risk_flags)
 
+        # Proactive risk-based closure for live positions: when the AI flags
+        # elevated risk AND the position is losing money, close it immediately
+        # to protect capital (mirrors the same logic in run_paper_signal).
+        if risk_flags:
+            live_pos_sym = [
+                p for p in open_positions
+                if p.get("position", {}).get("coin") == symbol
+            ]
+            for live_pos in live_pos_sym:
+                pos_data = live_pos.get("position", {})
+                unrealised_pnl = float(pos_data.get("unrealizedPnl", 0.0))
+                if unrealised_pnl < 0:
+                    side = pos_data.get("stype", "long")
+                    size_contracts = abs(float(pos_data.get("szi", 0.0)))
+                    if size_contracts > 0:
+                        log.warning(
+                            "Closing losing live %s %s position proactively "
+                            "– risk flags: %s (unrealised=%.2f USD)",
+                            symbol, side, risk_flags, unrealised_pnl,
+                        )
+                        live_trader.close_position(symbol, side, size_contracts, current_price)
+                        # Refresh open positions count after closure.
+                        open_positions = live_trader.get_open_positions()
+                        n_open = len(open_positions)
+
         perf = compute_metrics(trade_log[-50:], cfg.trading.initial_equity, cfg.trading.initial_equity)
         lev_rec = ai_orchestrator.recommend_leverage(
             symbol, ml_signal["confidence"], regime,
@@ -1169,8 +1194,9 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
     # Evaluation-driven model weight update.
     # Re-weight each symbol's ensemble using cached per-model training accuracy
     # so that better-performing models carry more influence in the next signal
-    # cycle.  The reinforcement step is intentionally small (alpha=0.10) to
-    # keep adjustments stable across evaluation windows.
+    # cycle.  The reinforcement step size is config-driven via
+    # cfg.ml.reinforcement_alpha (and may be adaptively increased, e.g. doubled
+    # on poor win rate) to keep adjustments stable across evaluation windows.
     _update_model_weights_from_evaluation(cfg, db, metrics)
 
     # Gemini performance review

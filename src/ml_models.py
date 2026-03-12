@@ -329,12 +329,14 @@ class QuantumEnsemble:
         return scores
 
     def has_timeframe_model(self, timeframe: str) -> bool:
-        """Return True when a per-timeframe model has been trained for *timeframe*.
+        """Return True when an in-memory per-timeframe model exists for *timeframe*.
 
-        Provides a public API for callers that need to choose between
-        :meth:`predict_timeframe` (per-tf model) and the global
-        :meth:`predict` (base ensemble) without accessing the private
-        ``_tf_models`` dict directly.
+        This only inspects the current process's ``_tf_models`` mapping as
+        populated by :meth:`train_timeframe`.  It does not infer the presence
+        of any persisted artefacts on disk, and may therefore return ``False``
+        after a fresh :meth:`load` even if per-timeframe training was run in a
+        previous process.  Callers that need persistence-aware checks should
+        not rely on this method alone.
         """
         return timeframe in self._tf_models
 

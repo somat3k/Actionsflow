@@ -3,9 +3,8 @@ and evaluation-driven model weight updates."""
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any, Dict
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -117,10 +116,11 @@ class TestCombinedDecisionTimeframeWeights:
         result = ensemble.combined_decision({"1m": pred_1m, "15m": pred_15m})
 
         # The combined probabilities won't clear the 0.60 threshold for either
-        # long or short, so the signal is FLAT.
-        # agreement is measured against the *final* combined signal (FLAT=0),
-        # and neither individual timeframe voted flat, so agreement=0.
-        assert result["signal"] in (0, 1, 2), "Signal should be a valid class"
+        # long or short (combined long≈0.29, short≈0.52), so the signal is FLAT.
+        assert result["signal"] == 0, (
+            f"Conflicting TFs should produce FLAT signal, got {result['signal']} "
+            f"(long={result['long_prob']:.3f}, short={result['short_prob']:.3f})"
+        )
         # Timeframe signals should be recorded.
         assert "1m" in result["timeframe_signals"]
         assert "15m" in result["timeframe_signals"]
@@ -458,11 +458,15 @@ class TestEvaluationDrivenWeightUpdate:
         _update_model_weights_from_evaluation(cfg, db, poor_metrics)
 
         cached = db.get_cache("evaluation:weight_update")
-        if isinstance(cached, dict) and "alpha" in cached:
-            base_alpha = cfg.ml.reinforcement_alpha
-            assert cached["alpha"] == pytest.approx(base_alpha * 2.0), (
-                f"Expected doubled alpha {base_alpha * 2.0} but got {cached['alpha']}"
-            )
+        base_alpha = cfg.ml.reinforcement_alpha
+        # The evaluation step must always write a weight_update cache entry
+        # when scores are cached and performance is poor.
+        assert cached is not None, "Expected evaluation:weight_update cache entry to be set"
+        assert isinstance(cached, dict), "Cached weight_update entry must be a dict"
+        assert "alpha" in cached, "Cached weight_update entry must contain 'alpha'"
+        assert cached["alpha"] == pytest.approx(base_alpha * 2.0), (
+            f"Expected doubled alpha {base_alpha * 2.0} but got {cached['alpha']}"
+        )
 
     def test_no_error_when_no_cached_scores(self, cfg, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
