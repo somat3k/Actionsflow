@@ -380,7 +380,7 @@ class Evaluator:
         direction_multiplier = -1 if direction == "loosen" else 1
 
         def _append_adjustment(
-            parameter: str, old_value: float, step: float, value_range: tuple[float, float]
+            parameter: str, old_value: float, step: float, value_range: Tuple[float, float]
         ) -> None:
             if step <= 0:
                 return
