@@ -364,8 +364,8 @@ class Evaluator:
         self, *, direction: str, reason: str
     ) -> List[Dict[str, Any]]:
         adjustments = []
-        step_thresh = self.cfg.ml.infinity_hp_adjust_step_threshold
-        step_agree = self.cfg.ml.infinity_hp_adjust_agreement_step
+        step_thresh = abs(self.cfg.ml.infinity_hp_adjust_step_threshold)
+        step_agree = abs(self.cfg.ml.infinity_hp_adjust_agreement_step)
         if step_thresh <= 0 and step_agree <= 0:
             return adjustments
 
@@ -376,41 +376,31 @@ class Evaluator:
         agreement_range = (0.40, 0.85)
         direction_multiplier = -1 if direction == "loosen" else 1
 
-        old_lt = self.cfg.ml.long_threshold
-        new_lt = np.clip(old_lt + direction_multiplier * step_thresh, *threshold_range)
-        if new_lt != old_lt:
+        def _append_adjustment(
+            parameter: str, old_value: float, step: float, value_range: tuple[float, float]
+        ) -> None:
+            if step <= 0:
+                return
+            new_value = np.clip(old_value + direction_multiplier * step, *value_range)
+            if new_value == old_value:
+                return
             adjustments.append(
                 {
-                    "parameter": "ml.long_threshold",
-                    "old_value": old_lt,
-                    "new_value": float(new_lt),
+                    "parameter": parameter,
+                    "old_value": old_value,
+                    "new_value": float(new_value),
                     "reason": reason,
                 }
             )
 
-        old_st = self.cfg.ml.short_threshold
-        new_st = np.clip(old_st + direction_multiplier * step_thresh, *threshold_range)
-        if new_st != old_st:
-            adjustments.append(
-                {
-                    "parameter": "ml.short_threshold",
-                    "old_value": old_st,
-                    "new_value": float(new_st),
-                    "reason": reason,
-                }
-            )
-
-        old_agree = self.cfg.ml.min_ensemble_agreement
-        new_agree = np.clip(old_agree + direction_multiplier * step_agree, *agreement_range)
-        if new_agree != old_agree:
-            adjustments.append(
-                {
-                    "parameter": "ml.min_ensemble_agreement",
-                    "old_value": old_agree,
-                    "new_value": float(new_agree),
-                    "reason": reason,
-                }
-            )
+        _append_adjustment("ml.long_threshold", self.cfg.ml.long_threshold, step_thresh, threshold_range)
+        _append_adjustment("ml.short_threshold", self.cfg.ml.short_threshold, step_thresh, threshold_range)
+        _append_adjustment(
+            "ml.min_ensemble_agreement",
+            self.cfg.ml.min_ensemble_agreement,
+            step_agree,
+            agreement_range,
+        )
 
         return adjustments
 
