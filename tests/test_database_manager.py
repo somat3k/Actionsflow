@@ -59,3 +59,98 @@ def test_cache_set_and_get(tmp_path):
     db.set_cache("evaluation:last_metrics", {"pass": False, "sharpe_ratio": -0.5})
     updated = db.get_cache("evaluation:last_metrics")
     assert updated == {"pass": False, "sharpe_ratio": -0.5}
+
+
+# ── Redis-integration tests ────────────────────────────────────────────────────
+
+def test_redis_backend_is_embedded(tmp_path):
+    """DatabaseManager should use embedded fakeredis by default."""
+    db = DatabaseManager(tmp_path / "state.db")
+    assert db.redis.is_available
+    assert db.redis.is_embedded
+
+
+def test_cache_write_through_to_redis(tmp_path):
+    """Values written via set_cache must be readable from Redis directly."""
+    db = DatabaseManager(tmp_path / "state.db")
+    import json
+
+    db.set_cache("wt-key", {"score": 99})
+    raw = db.redis.get("wt-key")
+    assert raw is not None
+    assert json.loads(raw) == {"score": 99}
+
+
+def test_cache_redis_miss_falls_back_to_sqlite(tmp_path):
+    """After flushing Redis, get_cache should re-read from SQLite."""
+    db = DatabaseManager(tmp_path / "state.db")
+
+    db.set_cache("fallback-key", {"x": 42})
+    # Evict from Redis
+    db.redis.flush()
+    assert db.redis.get("fallback-key") is None
+
+    # Should still return value from SQLite and re-warm Redis
+    result = db.get_cache("fallback-key")
+    assert result == {"x": 42}
+
+    # Redis should now be warm again
+    assert db.redis.get("fallback-key") is not None
+
+
+def test_cache_with_explicit_ttl(tmp_path):
+    """TTL passed to set_cache should be stored in SQLite and applied in Redis."""
+    db = DatabaseManager(tmp_path / "state.db")
+    db.set_cache("ttl-entry", {"v": 1}, ttl_seconds=300)
+
+    # Redis should have a TTL applied
+    remaining = db.redis.ttl("ttl-entry")
+    assert remaining is not None and remaining > 0
+
+    # SQLite should store the TTL
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        row = conn.execute(
+            "SELECT ttl_seconds FROM task_cache WHERE cache_key = ?", ("ttl-entry",)
+        ).fetchone()
+    assert row is not None and row[0] == 300
+
+
+def test_delete_cache(tmp_path):
+    """delete_cache should remove the entry from both Redis and SQLite."""
+    db = DatabaseManager(tmp_path / "state.db")
+    db.set_cache("del-key", {"bye": True})
+    assert db.get_cache("del-key") is not None
+
+    db.delete_cache("del-key")
+
+    # SQLite gone
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        row = conn.execute(
+            "SELECT 1 FROM task_cache WHERE cache_key = ?", ("del-key",)
+        ).fetchone()
+    assert row is None
+
+    # Redis gone
+    assert db.redis.get("del-key") is None
+    # get_cache should return None
+    assert db.get_cache("del-key") is None
+
+
+def test_cache_keys_returns_matching_keys(tmp_path):
+    """cache_keys should enumerate keys stored in Redis."""
+    db = DatabaseManager(tmp_path / "state.db")
+    db.redis.flush()
+    db.set_cache("training:btc", {"ts": 1})
+    db.set_cache("training:eth", {"ts": 2})
+    db.set_cache("evaluation:metrics", {"pass": True})
+
+    training_keys = sorted(db.cache_keys("training:*"))
+    assert training_keys == ["training:btc", "training:eth"]
+
+
+def test_close_releases_redis(tmp_path):
+    """close() should shut down the Redis controller."""
+    db = DatabaseManager(tmp_path / "state.db")
+    assert db.redis.is_available
+    db.close()
+    assert not db.redis.is_available

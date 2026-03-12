@@ -30,6 +30,12 @@ websocket-client>=1.7,<2.0
 PyYAML>=6.0,<7.0
 python-dotenv>=1.0,<2.0
 
+# ── Cache (Redis + embedded fakeredis) ────────────────────────────────────────
+# fakeredis provides an embedded in-process Redis instance (no external daemon).
+# Install the redis extras to enable: pip install "quantum-trader[redis]"
+redis>=5.0,<8.0
+fakeredis>=2.20,<3.0
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 streamlit>=1.32,<2.0
 
