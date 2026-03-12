@@ -167,6 +167,9 @@ def compute_metrics(
 class Evaluator:
     """Evaluates trading performance and emits concrete adjustment recommendations."""
 
+    _THRESHOLD_RANGE = (0.50, 0.85)
+    _AGREEMENT_RANGE = (0.40, 0.85)
+
     def __init__(self, config: AppConfig) -> None:
         self.cfg = config
         self.eval_cfg: EvaluationConfig = config.evaluation
@@ -372,8 +375,8 @@ class Evaluator:
         if direction not in {"loosen", "tighten"}:
             raise ValueError("direction must be 'loosen' or 'tighten'")
 
-        threshold_range = (0.50, 0.85)
-        agreement_range = (0.40, 0.85)
+        threshold_range = self._THRESHOLD_RANGE
+        agreement_range = self._AGREEMENT_RANGE
         direction_multiplier = -1 if direction == "loosen" else 1
 
         def _append_adjustment(
