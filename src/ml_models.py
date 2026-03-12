@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -934,6 +935,140 @@ class QuantumEnsemble:
             "agreement": agreement,
             "model_signals": model_signals,
         }
+
+    # ── Health Check ───────────────────────────────────────────────────────────
+
+    def health_check(self) -> List[Dict[str, Any]]:
+        """Run a realtime inference probe on every loaded sub-model.
+
+        Builds a minimal synthetic feature DataFrame and passes it through
+        each sub-model that is currently loaded, recording latency and the
+        predicted signal.  The full ensemble ``predict()`` is also exercised
+        at the end.
+
+        Returns:
+            List of per-model result dicts, each with keys:
+
+            - ``model``      : model name
+            - ``status``     : ``"ok"`` | ``"error"`` | ``"not_loaded"``
+            - ``latency_ms`` : inference latency in milliseconds (``None`` when not loaded)
+            - ``signal``     : predicted signal class (0=flat, 1=long, 2=short), or ``None``
+            - ``error``      : error message when ``status`` is not ``"ok"``
+        """
+        if not self.feature_cols:
+            return [{
+                "model": "ensemble",
+                "status": "not_loaded",
+                "latency_ms": None,
+                "signal": None,
+                "error": "models not trained or loaded",
+            }]
+
+        # Synthetic feature DataFrame (enough rows for temporal-window NN).
+        n_rows = max(20, _NN_WINDOW + 2)
+        X_synthetic = pd.DataFrame(
+            np.zeros((n_rows, len(self.feature_cols)), dtype=np.float32),
+            columns=self.feature_cols,
+        )
+
+        results: List[Dict[str, Any]] = []
+
+        # Per sub-model probes.
+        sub_models: Dict[str, Any] = {
+            "xgb": self.xgb_model,
+            "gb": self.gb_model,
+            "rf": self.rf_model,
+            "linear": self.linear_model,
+            "tree_clf": self.tree_clf,
+            "nn (mlp)": self.nn_model,
+        }
+        for model_name, model in sub_models.items():
+            if model is None:
+                results.append({
+                    "model": model_name,
+                    "status": "not_loaded",
+                    "latency_ms": None,
+                    "signal": None,
+                    "error": "",
+                })
+                continue
+
+            t0 = time.monotonic()
+            try:
+                X_s = self.scaler.transform(
+                    X_synthetic.iloc[-1:].values.astype(np.float32)
+                )
+                if model_name == "nn (mlp)":
+                    # Neural network uses temporal-window augmented features.
+                    X_all = self.scaler.transform(
+                        X_synthetic.values.astype(np.float32)
+                    )
+                    if len(X_all) > _NN_WINDOW:
+                        seg = X_all[-(_NN_WINDOW + 1):-1]
+                        aug = np.concatenate([
+                            X_all[-1],
+                            seg.mean(axis=0),
+                            seg.std(axis=0),
+                            seg[-1] - seg[0],
+                        ])[np.newaxis]
+                        proba = model.predict_proba(aug)[0]
+                    else:
+                        proba = np.full(self.N_CLASSES, 1.0 / self.N_CLASSES)
+                else:
+                    proba = model.predict_proba(X_s)[0]
+
+                latency_ms = (time.monotonic() - t0) * 1000
+                signal = int(np.argmax(proba))
+                results.append({
+                    "model": model_name,
+                    "status": "ok",
+                    "latency_ms": round(latency_ms, 3),
+                    "signal": signal,
+                    "error": "",
+                })
+                log.info(
+                    "ML health check OK: %s → signal=%d (%.2fms)",
+                    model_name, signal, latency_ms,
+                )
+            except Exception as exc:
+                latency_ms = (time.monotonic() - t0) * 1000
+                results.append({
+                    "model": model_name,
+                    "status": "error",
+                    "latency_ms": round(latency_ms, 3),
+                    "signal": None,
+                    "error": str(exc),
+                })
+                log.warning("ML health check ERROR: %s – %s", model_name, exc)
+
+        # Full ensemble probe.
+        t0 = time.monotonic()
+        try:
+            pred = self.predict(X_synthetic)
+            latency_ms = (time.monotonic() - t0) * 1000
+            results.append({
+                "model": "ensemble (combined)",
+                "status": "ok",
+                "latency_ms": round(latency_ms, 3),
+                "signal": pred["signal"],
+                "error": "",
+            })
+            log.info(
+                "ML health check OK: ensemble → signal=%d (%.2fms)",
+                pred["signal"], latency_ms,
+            )
+        except Exception as exc:
+            latency_ms = (time.monotonic() - t0) * 1000
+            results.append({
+                "model": "ensemble (combined)",
+                "status": "error",
+                "latency_ms": round(latency_ms, 3),
+                "signal": None,
+                "error": str(exc),
+            })
+            log.warning("ML health check ERROR: ensemble – %s", exc)
+
+        return results
 
     # ── Persistence ────────────────────────────────────────────────────────────
 

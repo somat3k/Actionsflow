@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import statistics
 import textwrap
+import time
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
@@ -136,6 +137,8 @@ class OpenAICompatibleOrchestrator:
 class GeminiProvider:
     """Wrapper to expose Gemini as a provider when the API is available."""
 
+    name = "Gemini"
+
     def __init__(self, orchestrator: GeminiOrchestrator) -> None:
         self.orchestrator = orchestrator
 
@@ -237,6 +240,88 @@ class MultiAIOrchestrator:
             if isinstance(result, dict) and result:
                 responses.append(result)
         return responses
+
+    def health_check(self) -> List[Dict[str, Any]]:
+        """Run a real-data inference probe on every configured AI provider.
+
+        Sends a minimal synthetic market-context request to each provider
+        and records whether a valid response is returned.  Providers that
+        are not configured (no API key / library unavailable) are reported
+        with ``status="skipped"``; those that raise or return an empty
+        response are reported with ``status="error"``.
+
+        Returns:
+            List of per-provider result dicts, each with keys:
+
+            - ``provider``   : provider name
+            - ``status``     : ``"ok"`` | ``"error"`` | ``"skipped"``
+            - ``latency_ms`` : round-trip latency in milliseconds (``None`` when skipped)
+            - ``error``      : error message when ``status`` is not ``"ok"``
+        """
+        # Minimal synthetic market data used as the health probe payload.
+        _probe_signal: Dict[str, Any] = {
+            "signal": 0, "confidence": 0.5, "agreement": 0.8,
+            "long_prob": 0.3, "short_prob": 0.2,
+        }
+        _probe_snapshot: Dict[str, Any] = {
+            "funding": {
+                "funding_rate": 0.0001, "open_interest": 1000.0, "mark_price": 50000.0,
+            },
+            "order_book": {"order_book_imbalance": 0.0, "bid_ask_spread_bps": 1.0},
+            "trade_flow_imbalance": 0.0,
+        }
+
+        results: List[Dict[str, Any]] = []
+        active_names: set = set()
+
+        for provider in self._providers:
+            name: str = getattr(provider, "name", type(provider).__name__)
+            active_names.add(name)
+            t0 = time.monotonic()
+            try:
+                response = provider.analyse_market_context(
+                    "BTC", _probe_signal, _probe_snapshot
+                )
+                latency_ms = (time.monotonic() - t0) * 1000
+                if isinstance(response, dict) and response:
+                    results.append({
+                        "provider": name, "status": "ok",
+                        "latency_ms": round(latency_ms, 1), "error": "",
+                    })
+                    log.info(
+                        "AI health check OK: %s (%.0fms)", name, latency_ms
+                    )
+                else:
+                    results.append({
+                        "provider": name, "status": "error",
+                        "latency_ms": round(latency_ms, 1),
+                        "error": "empty or invalid response",
+                    })
+                    log.warning(
+                        "AI health check FAILED: %s – empty response", name
+                    )
+            except Exception as exc:
+                latency_ms = (time.monotonic() - t0) * 1000
+                results.append({
+                    "provider": name, "status": "error",
+                    "latency_ms": round(latency_ms, 1), "error": str(exc),
+                })
+                log.warning("AI health check ERROR: %s – %s", name, exc)
+
+        # Report unconfigured providers as skipped.
+        _all_provider_keys = [
+            ("Gemini", self._fallback.gcfg.api_key),
+            ("OpenRouter", self.cfg.openrouter.api_key),
+            ("OpenAI", self.cfg.openai.api_key),
+            ("Groq", self.cfg.groq.api_key),
+        ]
+        for name, key in _all_provider_keys:
+            if name not in active_names:
+                results.append({
+                    "provider": name, "status": "skipped",
+                    "latency_ms": None, "error": "no API key configured",
+                })
+        return results
 
 
 def _build_market_context_prompt(

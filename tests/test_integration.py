@@ -12,6 +12,9 @@ Run individually:
 
 Or as part of the full suite:
     pytest tests/ -v
+
+All tests in this module are marked ``slow`` and are skipped by default.
+Run with ``-m slow`` or ``-m ''`` to include them.
 """
 
 from __future__ import annotations
@@ -23,6 +26,8 @@ from pathlib import Path
 import pytest
 
 from src.main import main, run_training, run_paper_signal, run_evaluation
+
+pytestmark = pytest.mark.slow
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

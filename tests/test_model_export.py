@@ -67,6 +67,7 @@ def _trained_ensemble(tmp_path: Path) -> QuantumEnsemble:
 # ── ONNX export ───────────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestExportOnnx:
     def test_export_skipped_when_skl2onnx_missing(self, tmp_path, monkeypatch):
         """export_onnx returns {} and logs a warning when skl2onnx is not available."""
@@ -120,6 +121,7 @@ class TestExportOnnx:
 # ── ModelDelegationAgent ─────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestModelDelegationAgent:
     def _make_agent(self, tmp_path: Path) -> ModelDelegationAgent:
         import os
@@ -217,6 +219,7 @@ def test_regime_model_map_targets_valid_models():
 
 
 class TestRunModelExport:
+    @pytest.mark.slow
     def test_export_models_run_type_succeeds(self, tmp_path, monkeypatch):
         """run_model_export completes successfully with a pre-trained model."""
         monkeypatch.chdir(tmp_path)
@@ -240,6 +243,7 @@ class TestRunModelExport:
             rc = run_model_export()
         assert rc == 0
 
+    @pytest.mark.slow
     def test_export_models_saves_csv(self, tmp_path, monkeypatch):
         """run_model_export writes OHLCV CSV files for symbols with models."""
         monkeypatch.chdir(tmp_path)

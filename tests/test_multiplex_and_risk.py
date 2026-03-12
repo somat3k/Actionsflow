@@ -138,6 +138,7 @@ class TestCombinedDecisionTimeframeWeights:
 # ── _build_multiplex_signal ───────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestBuildMultiplexSignal:
     """Verify _build_multiplex_signal combines timeframe predictions correctly
     and falls back gracefully when data is missing."""
@@ -399,6 +400,7 @@ class TestEvaluationDrivenWeightUpdate:
         from src.evaluator import PerformanceMetrics
         return PerformanceMetrics(win_rate=win_rate, sharpe_ratio=1.2)
 
+    @pytest.mark.slow
     def test_weights_updated_when_scores_cached(self, cfg, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "models").mkdir()
@@ -435,6 +437,7 @@ class TestEvaluationDrivenWeightUpdate:
         )
         assert changed, "Weights should be updated after evaluation-driven reinforcement"
 
+    @pytest.mark.slow
     def test_larger_alpha_on_poor_performance(self, cfg, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "models").mkdir()
