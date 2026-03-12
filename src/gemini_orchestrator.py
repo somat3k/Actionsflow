@@ -55,6 +55,19 @@ class GeminiOrchestrator:
       - Secondary (gemini-2.5-pro): deep performance review and strategy tuning
     """
 
+    _PRIMARY_MODEL_PREFERENCE = (
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
+    )
+    _SECONDARY_MODEL_PREFERENCE = (
+        "gemini-2.5-pro",
+        "gemini-1.5-pro",
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+    )
+
     def __init__(self, config: AppConfig) -> None:
         self.cfg = config
         self.gcfg = config.gemini
@@ -67,6 +80,19 @@ class GeminiOrchestrator:
 
         if _GENAI_AVAILABLE and self.gcfg.api_key:
             genai.configure(api_key=self.gcfg.api_key)
+            available_primary = self._list_supported_models()
+            selected_primary = self._select_preferred_model(
+                available_primary,
+                self._PRIMARY_MODEL_PREFERENCE,
+                self.gcfg.model,
+            )
+            if available_primary and selected_primary != self.gcfg.model:
+                log.warning(
+                    "Gemini primary model '%s' unavailable; switching to '%s'",
+                    self.gcfg.model,
+                    selected_primary,
+                )
+                self.gcfg.model = selected_primary
             self._model = genai.GenerativeModel(
                 model_name=self.gcfg.model,
                 system_instruction=_SYSTEM_PROMPT,
@@ -77,6 +103,19 @@ class GeminiOrchestrator:
                 try:
                     # Reconfigure with second API key for the secondary model.
                     genai.configure(api_key=self.gcfg.api_key_2)
+                    available_secondary = self._list_supported_models()
+                    selected_secondary = self._select_preferred_model(
+                        available_secondary,
+                        self._SECONDARY_MODEL_PREFERENCE,
+                        self.gcfg.model_2,
+                    )
+                    if available_secondary and selected_secondary != self.gcfg.model_2:
+                        log.warning(
+                            "Gemini secondary model '%s' unavailable; switching to '%s'",
+                            self.gcfg.model_2,
+                            selected_secondary,
+                        )
+                        self.gcfg.model_2 = selected_secondary
                     self._model_2 = genai.GenerativeModel(
                         model_name=self.gcfg.model_2,
                         system_instruction=_SYSTEM_PROMPT,
@@ -391,7 +430,8 @@ class GeminiOrchestrator:
         msg = str(exc).lower()
         return "404" in msg and "model" in msg and "not found" in msg and "generatecontent" in msg
 
-    def _switch_to_supported_model(self, failed_model: str) -> bool:
+    @staticmethod
+    def _list_supported_models() -> List[str]:
         try:
             available = []
             for model in genai.list_models():
@@ -403,33 +443,47 @@ class GeminiOrchestrator:
                 }
                 if name.startswith("models/gemini") and "generatecontent" in methods:
                     available.append(name.replace("models/", ""))
-
-            if not available:
-                return False
-
-            preferred_order = (
-                "gemini-2.5-pro",
-                "gemini-2.5-flash",
-                "gemini-1.5-pro",
-                "gemini-1.5-flash",
-            )
-            for preferred in preferred_order:
-                for candidate in available:
-                    if candidate.startswith(preferred):
-                        if candidate == failed_model:
-                            continue
-                        self._model = genai.GenerativeModel(
-                            model_name=candidate,
-                            system_instruction=_SYSTEM_PROMPT,
-                        )
-                        self.gcfg.model = candidate
-                        log.warning("Switched Gemini model to supported fallback '%s'", candidate)
-                        return True
-
-            return False
+            return available
         except Exception as exc:
-            log.warning("Failed to resolve fallback Gemini model: %s", exc)
+            log.warning("Failed to list Gemini models: %s", exc)
+            return []
+
+    @staticmethod
+    def _select_preferred_model(
+        available: List[str],
+        preferred_order: tuple[str, ...],
+        configured: str,
+        exclude: Optional[str] = None,
+    ) -> str:
+        if configured and configured in available and configured != exclude:
+            return configured
+        for preferred in preferred_order:
+            for candidate in available:
+                if candidate.startswith(preferred) and candidate != exclude:
+                    return candidate
+        return configured
+
+    def _switch_to_supported_model(self, failed_model: str) -> bool:
+        available = self._list_supported_models()
+        if not available:
             return False
+
+        candidate = self._select_preferred_model(
+            available,
+            self._PRIMARY_MODEL_PREFERENCE,
+            self.gcfg.model,
+            exclude=failed_model,
+        )
+        if not candidate or candidate == failed_model or candidate not in available:
+            return False
+
+        self._model = genai.GenerativeModel(
+            model_name=candidate,
+            system_instruction=_SYSTEM_PROMPT,
+        )
+        self.gcfg.model = candidate
+        log.warning("Switched Gemini model to supported fallback '%s'", candidate)
+        return True
 
     @staticmethod
     def _extract_json(text: str) -> str:

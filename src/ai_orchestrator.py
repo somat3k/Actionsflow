@@ -1,6 +1,7 @@
 """
 Multi-provider AI orchestrator for Gemini, OpenAI, OpenRouter, and Groq.
-Uses Gemini as a fallback when other providers are unavailable.
+Gemini participates as a provider when configured and is also the final
+fallback/heuristic path when other providers are unavailable or return no response.
 """
 
 from __future__ import annotations

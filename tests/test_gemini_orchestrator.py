@@ -48,6 +48,7 @@ def test_model_not_found_auto_switches_to_supported_fallback(monkeypatch):
         @staticmethod
         def list_models():
             return [
+                _FakeModelInfo("models/gemini-1.5-pro", ["generateContent"]),
                 _FakeModelInfo("models/gemini-1.5-flash", ["generateContent"]),
             ]
 

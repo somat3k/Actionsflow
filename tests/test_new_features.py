@@ -57,7 +57,8 @@ class TestConfigDualGemini:
         assert cfg.gemini.model == "gemini-2.5-pro"
         assert cfg.gemini.model_2 == "gemini-2.5-pro"
 
-    def test_default_openai_model(self):
+    def test_default_openai_model(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_MODEL", raising=False)
         cfg = load_config()
         assert cfg.openai.model == "gpt-4o-mini"
 
