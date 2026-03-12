@@ -332,8 +332,13 @@ class Evaluator:
                 reason="Zero trades recorded: relaxing signal filters to locate opportunities",
             )
 
-        if m.trades_per_day <= 0:
-            log.info("Trade volume metrics unavailable; skipping trade-volume adjustments.")
+        min_trade_rate = 0.01
+        if m.trades_per_day <= min_trade_rate:
+            log.info(
+                "Trade volume metrics unavailable or too sparse (%.4f/day); "
+                "skipping trade-volume adjustments.",
+                m.trades_per_day,
+            )
             return []
 
         if min_target > 0 and m.trades_per_day < min_target:
@@ -384,7 +389,9 @@ class Evaluator:
         ) -> None:
             if step <= 0:
                 return
-            new_value = np.clip(old_value + direction_multiplier * step, *value_range)
+            new_value = np.clip(
+                old_value + direction_multiplier * step, value_range[0], value_range[1]
+            )
             if new_value == old_value:
                 return
             adjustments.append(

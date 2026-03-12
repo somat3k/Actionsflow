@@ -69,6 +69,13 @@ def _good_trade_history(n: int = 60, win_rate: float = 0.6) -> list:
     return trades
 
 
+def _set_permissive_thresholds(evaluator: Evaluator) -> None:
+    evaluator.eval_cfg.min_sharpe = -1.0
+    evaluator.eval_cfg.min_win_rate = 0.0
+    evaluator.eval_cfg.max_drawdown_pct = 1.0
+    evaluator.eval_cfg.min_profit_factor = 0.0
+
+
 # ── compute_metrics ───────────────────────────────────────────────────────────
 
 class TestComputeMetrics:
@@ -168,10 +175,7 @@ class TestEvaluatorEvaluate:
     def test_low_trade_rate_relaxes_filters(self, evaluator):
         evaluator.eval_cfg.min_trades_per_day = 5
         evaluator.eval_cfg.max_trades_per_day = 10
-        evaluator.eval_cfg.min_sharpe = -1.0
-        evaluator.eval_cfg.min_win_rate = 0.0
-        evaluator.eval_cfg.max_drawdown_pct = 1.0
-        evaluator.eval_cfg.min_profit_factor = 0.0
+        _set_permissive_thresholds(evaluator)
 
         start = 1_700_000_000_000
         # Four trades spaced one per day ⇒ ~1 trade/day (< min_trades_per_day=5).
