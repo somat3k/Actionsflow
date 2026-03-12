@@ -14,7 +14,7 @@ import json
 import textwrap
 import time
 import warnings
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 from src.config import AppConfig
 from src.utils import fmt_pct, fmt_usd, get_logger
@@ -32,9 +32,14 @@ except ImportError:
     _GENAI_AVAILABLE = False
     log.warning("google-generativeai not installed – Gemini orchestrator disabled")
 
+class _ModelListCacheEntry(TypedDict):
+    models: List[str]
+    timestamp: float
+
+
 # Module-level cache for supported model lists, keyed by API key.
 # Entries expire after _MODEL_LIST_CACHE_TTL seconds to avoid stale data.
-_MODEL_LIST_CACHE: Dict[str, Dict] = {}
+_MODEL_LIST_CACHE: Dict[str, _ModelListCacheEntry] = {}
 _MODEL_LIST_CACHE_TTL = 3600  # 1 hour
 
 
@@ -437,7 +442,7 @@ class GeminiOrchestrator:
         return "404" in msg and "model" in msg and "not found" in msg and "generatecontent" in msg
 
     @staticmethod
-    def _list_supported_models(api_key: str = "") -> List[str]:
+    def _list_supported_models(api_key: str) -> List[str]:
         now = time.time()
         cache_entry = _MODEL_LIST_CACHE.get(api_key)
         if cache_entry and (now - cache_entry["timestamp"]) < _MODEL_LIST_CACHE_TTL:
