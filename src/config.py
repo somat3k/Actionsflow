@@ -176,7 +176,8 @@ class EvaluationConfig:
     min_profit_factor: float = 1.20
     auto_adjust_enabled: bool = True
     evaluation_window_trades: int = 50
-    # Trade volume targets (per day); set <=0 to disable volume adjustments.
+    # Trade volume targets (per day); defaults align with high-frequency paper
+    # evaluation targets. Set <=0 to disable volume adjustments.
     min_trades_per_day: int = 700
     max_trades_per_day: int = 2000
     # Stabs/pierces: short-window early-warning checks

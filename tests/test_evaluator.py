@@ -174,6 +174,7 @@ class TestEvaluatorEvaluate:
         evaluator.eval_cfg.min_profit_factor = 0.0
 
         start = 1_700_000_000_000
+        # Four trades spaced one per day ⇒ ~1 trade/day (< min_trades_per_day=5).
         trades = [
             _make_trade(
                 pnl=50.0,
