@@ -169,6 +169,7 @@ class Evaluator:
 
     _THRESHOLD_RANGE = (0.50, 0.85)
     _AGREEMENT_RANGE = (0.40, 0.85)
+    _MIN_TRADE_RATE_THRESHOLD = 0.01
 
     def __init__(self, config: AppConfig) -> None:
         self.cfg = config
@@ -332,8 +333,7 @@ class Evaluator:
                 reason="Zero trades recorded: relaxing signal filters to locate opportunities",
             )
 
-        min_trade_rate = 0.01
-        if m.trades_per_day <= min_trade_rate:
+        if m.trades_per_day <= self._MIN_TRADE_RATE_THRESHOLD:
             log.info(
                 "Trade volume metrics unavailable or too sparse (%.4f/day); "
                 "skipping trade-volume adjustments.",
@@ -378,7 +378,9 @@ class Evaluator:
             return adjustments
 
         if direction not in {"loosen", "tighten"}:
-            raise ValueError("direction must be 'loosen' or 'tighten'")
+            raise ValueError(
+                f"direction must be 'loosen' or 'tighten', got: {direction}"
+            )
 
         threshold_range = self._THRESHOLD_RANGE
         agreement_range = self._AGREEMENT_RANGE

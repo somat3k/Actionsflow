@@ -177,8 +177,8 @@ class EvaluationConfig:
     auto_adjust_enabled: bool = True
     evaluation_window_trades: int = 50
     # Trade volume targets (per day); defaults align with high-frequency paper
-    # evaluation targets and should be tuned lower for typical strategies.
-    # Set <=0 to disable volume adjustments.
+    # evaluation targets. WARNING: typical strategies should tune this much lower
+    # (e.g., 5-20 trades/day). Set <=0 to disable volume adjustments.
     min_trades_per_day: int = 700
     max_trades_per_day: int = 2000
     # Stabs/pierces: short-window early-warning checks
