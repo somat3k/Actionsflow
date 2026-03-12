@@ -390,6 +390,11 @@ evaluation:
     max_drawdown_pct: 0.25
     min_profit_factor: 1.20
 
+  # Target daily trade volume (paper trading)
+  trade_volume:
+    min_trades_per_day: 700
+    max_trades_per_day: 2000
+
   # Auto-adjustment triggers
   auto_adjust:
     enabled: true

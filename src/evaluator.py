@@ -237,15 +237,21 @@ class Evaluator:
         if not self.eval_cfg.auto_adjust_enabled:
             return metrics, adjustments
 
+        volume_adjustments = self._generate_trade_volume_adjustments(metrics)
+        adjustments.extend(volume_adjustments)
+
         if len(trade_history) < self.eval_cfg.evaluation_window_trades:
-            log.info(
-                "Not enough trades for evaluation (%d < %d)",
-                len(trade_history),
-                self.eval_cfg.evaluation_window_trades,
-            )
+            if not trade_history:
+                log.info("No trades available for evaluation; volume adjustments=%d", len(adjustments))
+            else:
+                log.info(
+                    "Not enough trades for evaluation (%d < %d)",
+                    len(trade_history),
+                    self.eval_cfg.evaluation_window_trades,
+                )
             return metrics, adjustments
 
-        adjustments = self._generate_adjustments(metrics)
+        adjustments.extend(self._generate_adjustments(metrics))
         return metrics, adjustments
 
     def print_report(
@@ -307,6 +313,106 @@ class Evaluator:
             and m.max_drawdown_pct <= self.eval_cfg.max_drawdown_pct
             and m.profit_factor >= self.eval_cfg.min_profit_factor
         )
+
+    def _generate_trade_volume_adjustments(
+        self, m: PerformanceMetrics
+    ) -> List[Dict[str, Any]]:
+        min_target = self.eval_cfg.min_trades_per_day
+        max_target = self.eval_cfg.max_trades_per_day
+
+        if min_target <= 0 and max_target <= 0:
+            return []
+
+        if m.total_trades == 0:
+            return self._tune_signal_thresholds(
+                direction="loosen",
+                reason="Zero trades recorded: relaxing signal filters to locate opportunities",
+            )
+
+        if m.trades_per_day <= 0:
+            log.info("Trade volume metrics unavailable; skipping trade-volume adjustments.")
+            return []
+
+        if min_target > 0 and m.trades_per_day < min_target:
+            if self._passes_thresholds(m):
+                return self._tune_signal_thresholds(
+                    direction="loosen",
+                    reason=(
+                        f"Trade rate {m.trades_per_day:.1f}/day below target "
+                        f"{min_target}-{max_target}: easing filters to grow opportunity flow"
+                    ),
+                )
+            log.info(
+                "Trade rate %.1f/day below target but performance below thresholds; "
+                "keeping filters to protect equity.",
+                m.trades_per_day,
+            )
+            return []
+
+        if max_target > 0 and m.trades_per_day > max_target:
+            return self._tune_signal_thresholds(
+                direction="tighten",
+                reason=(
+                    f"Trade rate {m.trades_per_day:.1f}/day above target "
+                    f"{min_target}-{max_target}: tightening filters to reduce noise"
+                ),
+            )
+
+        return []
+
+    def _tune_signal_thresholds(
+        self, *, direction: str, reason: str
+    ) -> List[Dict[str, Any]]:
+        adjustments = []
+        step_thresh = self.cfg.ml.infinity_hp_adjust_step_threshold
+        step_agree = self.cfg.ml.infinity_hp_adjust_agreement_step
+        if step_thresh <= 0 and step_agree <= 0:
+            return adjustments
+
+        if direction not in {"loosen", "tighten"}:
+            raise ValueError("direction must be 'loosen' or 'tighten'")
+
+        threshold_range = (0.50, 0.85)
+        agreement_range = (0.40, 0.85)
+        direction_multiplier = -1 if direction == "loosen" else 1
+
+        old_lt = self.cfg.ml.long_threshold
+        new_lt = np.clip(old_lt + direction_multiplier * step_thresh, *threshold_range)
+        if new_lt != old_lt:
+            adjustments.append(
+                {
+                    "parameter": "ml.long_threshold",
+                    "old_value": old_lt,
+                    "new_value": float(new_lt),
+                    "reason": reason,
+                }
+            )
+
+        old_st = self.cfg.ml.short_threshold
+        new_st = np.clip(old_st + direction_multiplier * step_thresh, *threshold_range)
+        if new_st != old_st:
+            adjustments.append(
+                {
+                    "parameter": "ml.short_threshold",
+                    "old_value": old_st,
+                    "new_value": float(new_st),
+                    "reason": reason,
+                }
+            )
+
+        old_agree = self.cfg.ml.min_ensemble_agreement
+        new_agree = np.clip(old_agree + direction_multiplier * step_agree, *agreement_range)
+        if new_agree != old_agree:
+            adjustments.append(
+                {
+                    "parameter": "ml.min_ensemble_agreement",
+                    "old_value": old_agree,
+                    "new_value": float(new_agree),
+                    "reason": reason,
+                }
+            )
+
+        return adjustments
 
     def _generate_adjustments(
         self, m: PerformanceMetrics
