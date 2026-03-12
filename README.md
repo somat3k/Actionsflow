@@ -69,7 +69,8 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 | `trading.markets` | BTC, ETH, SOL, ARB, ZRO, AAVE, ADA, CATI | Symbols to trade (isolated margin) |
 | `trading.risk.max_drawdown_pct` | `0.20` | 20% max drawdown before halt |
 | `ml.signals.long_threshold` | `0.60` | P(long) to enter |
-| `gemini.model` | `gemini-1.5-pro` | Gemini model for orchestration |
+| `gemini.model` | `gemini-2.5-pro` | Gemini model for orchestration |
+| `openai.model` | `gpt-4o-mini` | OpenAI model for orchestration |
 | `groq.model` | `llama3-70b-8192` | Groq model for orchestration |
 | `openrouter.model` | `openai/gpt-4o-mini` | OpenRouter model for orchestration |
 
@@ -82,6 +83,7 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 | Secret | Required For | Description |
 |---|---|---|
 | `GEMINI_API_KEY` | All modes | Google Gemini AI API key |
+| `OPENAI_API_KEY` | Optional | OpenAI API key (OpenAI-compatible) |
 | `GROQ_API_KEY` | Optional | Groq API key (OpenAI-compatible) |
 | `OPENROUTER_API_KEY` | Optional | OpenRouter API key (OpenAI-compatible) |
 | `HYPERLIQUID_PRIVATE_KEY` | Live trading | Ethereum private key for signing orders |

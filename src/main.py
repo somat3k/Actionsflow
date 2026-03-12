@@ -525,7 +525,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
 def run_infinity_training(config_path: Optional[Path] = None) -> int:
     """Infinity-loop supervised-learning training mode.
 
-    The AI leader (Gemini / OpenRouter / Groq) acts as a supervised-learning
+    The AI leader (Gemini / OpenAI / OpenRouter / Groq) acts as a supervised-learning
     student in an endless loop of:
       1. Train models for ``training_epochs`` epochs.
       2. Evaluate performance metrics.
