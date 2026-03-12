@@ -179,6 +179,7 @@ def _make_enriched_df(n: int = 150) -> "pd.DataFrame":
     return df
 
 
+@pytest.mark.slow
 def test_ml_health_check_after_training(tmp_path):
     """All loaded sub-models pass the inference probe after training."""
     from src.ml_models import QuantumEnsemble
