@@ -328,6 +328,25 @@ class QuantumEnsemble:
         log.info("Epoch %s@%s scores: %s", symbol, timeframe, scores)
         return scores
 
+    def has_timeframe_model(self, timeframe: str) -> bool:
+        """Return True when a per-timeframe model has been trained for *timeframe*.
+
+        Provides a public API for callers that need to choose between
+        :meth:`predict_timeframe` (per-tf model) and the global
+        :meth:`predict` (base ensemble) without accessing the private
+        ``_tf_models`` dict directly.
+        """
+        return timeframe in self._tf_models
+
+    def save(self, symbol: str) -> None:
+        """Persist all trained model artefacts for *symbol*.
+
+        Public wrapper around the private :meth:`_save` method so that
+        external callers (e.g. the evaluation weight-update helper) do not
+        need to access a private method.
+        """
+        self._save(symbol)
+
     def predict_timeframe(self, df: pd.DataFrame, timeframe: str) -> Dict[str, Any]:
         """Run inference for a single timeframe model."""
         tf_data = self._tf_models.get(timeframe)
@@ -396,6 +415,8 @@ class QuantumEnsemble:
         """Combine predictions from multiple timeframes into a final signal.
 
         Uses a decision tree-flow approach: higher timeframes carry more weight.
+        Both uppercase (1H, 1D) and lowercase (1h, 1d) timeframe keys are
+        supported via the class-level _TF_WEIGHTS lookup.
         """
         if not tf_predictions:
             return {
@@ -405,7 +426,8 @@ class QuantumEnsemble:
                 "timeframe_signals": {},
             }
 
-        tf_weights = {"1m": 0.10, "5m": 0.15, "15m": 0.25, "1H": 0.25, "1D": 0.25}
+        # Use class-level weights so both "1h"/"1H" and "1d"/"1D" are covered.
+        tf_weight_map = self._TF_WEIGHTS
         total_weight = 0.0
         weighted_long = 0.0
         weighted_short = 0.0
@@ -413,7 +435,7 @@ class QuantumEnsemble:
         tf_signals = {}
 
         for tf, pred in tf_predictions.items():
-            w = tf_weights.get(tf, 0.10)
+            w = tf_weight_map.get(tf, 0.10)
             total_weight += w
             weighted_long += w * pred.get("long_prob", 0.0)
             weighted_short += w * pred.get("short_prob", 0.0)
