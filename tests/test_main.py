@@ -95,7 +95,7 @@ def test_signal_retrains_when_model_stale(test_env, monkeypatch):
         inst.train_calls for inst in DummyEnsemble.instances
     ), "Expected retraining when cached timestamp is stale"
 
-    db.redis.flush()
+    db.redis.delete("training:last_run")
     updated = db.get_cache("training:last_run")
     assert isinstance(updated, dict)
     first_symbol = cfg.trading.markets[0].symbol
