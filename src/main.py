@@ -1484,6 +1484,31 @@ def run_health_check(cfg_path: Optional[Path] = None) -> int:
         )
     lines.append("")
 
+    # ── Orchestration Probe ────────────────────────────────────────────────────
+    log.info("=== Orchestration Probe ===")
+    probe_results = ai_orchestrator.orchestration_probe()
+
+    lines.append("### Orchestration Pipeline Probe\n")
+    lines.append(
+        "_Simulates the full live-trading sequence: "
+        "market context → leverage → performance review_\n"
+    )
+    lines.append("| Provider | Step | Status | Latency | Notes |")
+    lines.append("|---|---|---|---|---|")
+    for r in probe_results:
+        icon = _status_icon.get(r["status"], "❓")
+        latency = f"{r['latency_ms']:.0f}ms" if r.get("latency_ms") is not None else "—"
+        step_label = {
+            "market_context": "1. Market Context",
+            "leverage": "2. Leverage",
+            "performance": "3. Performance",
+        }.get(r.get("step", ""), r.get("step", ""))
+        lines.append(
+            f"| {r['provider']} | {step_label} | {icon} {r['status']} "
+            f"| {latency} | {r.get('error', '')} |"
+        )
+    lines.append("")
+
     lines.append("### ML Models\n")
     _ml_status_icon = {"ok": "✅", "error": "❌", "not_loaded": "⬜"}
     _signal_labels = {0: "FLAT", 1: "LONG", 2: "SHORT"}

@@ -41,6 +41,10 @@ on:
         required: false
         default: "false"
         type: boolean
+      account_size:
+        description: "Account size (initial equity in USD) – leave blank to run both 10000 and 50"
+        required: false
+        default: ""
 
 concurrency:
   group: paper-training
@@ -48,11 +52,18 @@ concurrency:
 
 jobs:
   train:
-    name: Train ML Models
+    name: Train ML Models (equity=${{ matrix.account_size }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # When account_size input is provided (manual dispatch), run only that size.
+        # Otherwise (schedule / repository_dispatch) run both 10000 and 50 in parallel.
+        account_size: ${{ (inputs.account_size != '' && fromJSON(format('[{0}]', inputs.account_size))) || fromJSON('[10000, 50]') }}
 
     steps:
       - name: Checkout
@@ -74,9 +85,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: models/
-          key: ml-models-${{ github.ref_name }}
+          key: ml-models-${{ github.ref_name }}-equity${{ matrix.account_size }}-${{ github.run_id }}
           restore-keys: |
-            ml-models-
+            ml-models-${{ github.ref_name }}-equity${{ matrix.account_size }}-
+            ml-models-${{ github.ref_name }}-
 
       - name: Restore OHLCV CSV cache
         uses: actions/cache@v4
@@ -96,11 +108,19 @@ jobs:
           echo "LOOKBACK_CANDLES=${{ inputs.lookback_candles || '300' }}" >> "$GITHUB_ENV"
           echo "TRAINING_EPOCHS=${{ inputs.training_epochs || '3' }}" >> "$GITHUB_ENV"
           echo "FORCE_RETRAIN=${{ inputs.force_retrain || 'false' }}" >> "$GITHUB_ENV"
+          echo "INITIAL_EQUITY=${{ matrix.account_size }}" >> "$GITHUB_ENV"
 
       - name: Run model training (multiplex 1m/5m/15m/1h/1d)
         env:
           TRADING_MODE: paper
           LOG_LEVEL: INFO
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          HYPERLIQUID_SECRET: ${{ secrets.HYPERLIQUID_SECRET || secrets.HYPERLIQUID_PRIVATE_KEY }}
+          HYPERLIQUID_PRIVATE_KEY: ${{ secrets.HYPERLIQUID_PRIVATE_KEY || secrets.HYPERLIQUID_SECRET }}
+          HYPERLIQUID_ADDRESS: ${{ secrets.HYPERLIQUID_ADDRESS || secrets.HYPERLIQUID_WALLET_ADDRESS }}
+          HYPERLIQUID_WALLET_ADDRESS: ${{ secrets.HYPERLIQUID_WALLET_ADDRESS || secrets.HYPERLIQUID_ADDRESS }}
         run: |
           HOUR=$(date -u +%H)
           SESSION="unknown"
@@ -111,7 +131,7 @@ jobs:
             00|0) SESSION="4-of-4 (midnight)" ;;
             *) SESSION="on-demand" ;;
           esac
-          echo "## 🤖 Model Training Session ${SESSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 🤖 Model Training Session ${SESSION} – Account \$${{ matrix.account_size }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Symbols:** $TRAINING_SYMBOLS" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Lookback:** $LOOKBACK_CANDLES candles" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Epochs:** $TRAINING_EPOCHS" >> "$GITHUB_STEP_SUMMARY"
@@ -124,20 +144,23 @@ jobs:
         env:
           TRADING_MODE: paper
           LOG_LEVEL: INFO
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
-          echo "## 📊 Walk-Forward Validation" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 📊 Walk-Forward Validation – Account \$${{ matrix.account_size }}" >> "$GITHUB_STEP_SUMMARY"
           python -m src.main --run-type evaluate --mode paper
 
       - name: Save trained models
         uses: actions/cache/save@v4
         with:
           path: models/
-          key: ml-models-${{ github.ref_name }}
+          key: ml-models-${{ github.ref_name }}-equity${{ matrix.account_size }}-${{ github.run_id }}
 
       - name: Upload training artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ml-models-${{ github.run_number }}
+          name: ml-models-equity${{ matrix.account_size }}-${{ github.run_number }}
           path: |
             models/
             results/training_scores.json
@@ -147,7 +170,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: evaluation-report-${{ github.run_number }}
+          name: evaluation-report-equity${{ matrix.account_size }}-${{ github.run_number }}
           path: results/evaluation_report.json
           retention-days: 30
 

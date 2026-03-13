@@ -337,7 +337,7 @@ openai:
   timeout_seconds: 30
 
 groq:
-  model: "llama3-70b-8192"
+  model: "llama-3.3-70b-versatile"
   temperature: 0.1
   max_output_tokens: 2048
   timeout_seconds: 30
