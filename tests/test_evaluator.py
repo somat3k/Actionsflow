@@ -141,7 +141,7 @@ class TestComputeMetrics:
 # ── Evaluator.evaluate ────────────────────────────────────────────────────────
 
 class TestEvaluatorEvaluate:
-    def test_low_trade_count_still_adjusts(self, evaluator):
+    def test_adjusts_without_minimum_trade_gate(self, evaluator):
         evaluator.eval_cfg.evaluation_window_trades = 0
         trades = _good_trade_history(n=10, win_rate=0.30)
         m, adj = evaluator.evaluate(trades, 10_000.0, 9_500.0)
