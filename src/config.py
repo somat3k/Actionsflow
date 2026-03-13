@@ -180,8 +180,8 @@ class EvaluationConfig:
     # evaluation targets. WARNING: typical strategies should tune this much lower
     # (e.g., 10-50 trades/day). Set both bounds <=0 to disable volume adjustments,
     # or set one bound <=0 to disable only that side.
-    min_trades_per_day: int = 700
-    max_trades_per_day: int = 2000
+    min_trades_per_day: int = 50
+    max_trades_per_day: int = 150
     # Stabs/pierces: short-window early-warning checks
     stabs_enabled: bool = True
     stabs_window_trades: int = 10

@@ -395,8 +395,8 @@ evaluation:
   # (e.g., 10-50 trades/day). Set both bounds to 0 to disable adjustments, or set
   # one bound to 0 to disable only that side.
   trade_volume:
-    min_trades_per_day: 700
-    max_trades_per_day: 2000
+    min_trades_per_day: 50
+    max_trades_per_day: 150
 
   # Auto-adjustment triggers
   auto_adjust:
