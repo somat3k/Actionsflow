@@ -344,11 +344,15 @@ class Evaluator:
 
         if min_target > 0 and m.trades_per_day < min_target:
             if self._passes_thresholds(m):
+                if max_target > 0:
+                    target_desc = f"{min_target}-{max_target}/day"
+                else:
+                    target_desc = f">= {min_target}/day"
                 return self._tune_signal_thresholds(
                     direction="loosen",
                     reason=(
                         f"Trade rate {m.trades_per_day:.1f}/day below target "
-                        f"{min_target}-{max_target}: easing filters to grow opportunity flow"
+                        f"{target_desc}: easing filters to grow opportunity flow"
                     ),
                 )
             log.info(
@@ -359,11 +363,15 @@ class Evaluator:
             return []
 
         if max_target > 0 and m.trades_per_day > max_target:
+            if min_target > 0:
+                target_desc = f"{min_target}-{max_target}/day"
+            else:
+                target_desc = f"<= {max_target}/day"
             return self._tune_signal_thresholds(
                 direction="tighten",
                 reason=(
                     f"Trade rate {m.trades_per_day:.1f}/day above target "
-                    f"{min_target}-{max_target}: tightening filters to reduce noise"
+                    f"{target_desc}: tightening filters to reduce noise"
                 ),
             )
 
