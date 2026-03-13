@@ -400,7 +400,8 @@ evaluation:
   # Auto-adjustment triggers
   auto_adjust:
     enabled: true
-    evaluation_window_trades: 50
+    # Minimum trades before full auto-adjustments; set <=0 to disable gating.
+    evaluation_window_trades: 0
     adjust_if_sharpe_below: 0.8
     adjust_if_drawdown_above: 0.15
     leverage_reduce_step: 5

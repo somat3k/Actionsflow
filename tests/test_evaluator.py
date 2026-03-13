@@ -141,10 +141,12 @@ class TestComputeMetrics:
 # ── Evaluator.evaluate ────────────────────────────────────────────────────────
 
 class TestEvaluatorEvaluate:
-    def test_not_enough_trades_no_adjustments(self, evaluator, config):
-        trades = _good_trade_history(n=10)  # Below eval_window_trades
-        m, adj = evaluator.evaluate(trades, 10_000.0, 10_500.0)
-        assert adj == []  # Not enough trades
+    def test_low_trade_count_still_adjusts(self, evaluator):
+        evaluator.eval_cfg.evaluation_window_trades = 0
+        trades = _good_trade_history(n=10, win_rate=0.30)
+        m, adj = evaluator.evaluate(trades, 10_000.0, 9_500.0)
+        threshold_adj = [a for a in adj if "long_threshold" in a["parameter"]]
+        assert threshold_adj
 
     def test_good_performance_no_negative_adjustments(self, evaluator):
         # High win rate + good Sharpe → should not reduce leverage

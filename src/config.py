@@ -175,7 +175,9 @@ class EvaluationConfig:
     max_drawdown_pct: float = 0.25
     min_profit_factor: float = 1.20
     auto_adjust_enabled: bool = True
-    evaluation_window_trades: int = 50
+    # Minimum trades required before full auto-adjustments; set <=0 to disable
+    # the minimum gate so adjustments can run on any trade history.
+    evaluation_window_trades: int = 0
     # Trade volume targets (per day); defaults are intentionally conservative to
     # avoid limiting strategy throughput. WARNING: typical strategies should tune
     # this much lower (e.g., 10-50 trades/day). Set <=0 to disable adjustments.
@@ -500,7 +502,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         max_drawdown_pct=float(thresholds.get("max_drawdown_pct", 0.25)),
         min_profit_factor=float(thresholds.get("min_profit_factor", 1.20)),
         auto_adjust_enabled=bool(auto_adj.get("enabled", True)),
-        evaluation_window_trades=int(auto_adj.get("evaluation_window_trades", 50)),
+        evaluation_window_trades=int(auto_adj.get("evaluation_window_trades", 0)),
         min_trades_per_day=int(trade_volume_raw.get("min_trades_per_day", 50)),
         stabs_enabled=bool(stabs_raw.get("enabled", True)),
         stabs_window_trades=int(stabs_raw.get("window_trades", 10)),

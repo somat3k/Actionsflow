@@ -244,7 +244,10 @@ class Evaluator:
         volume_adjustments = self._generate_trade_volume_adjustments(metrics)
         adjustments.extend(volume_adjustments)
 
-        if len(trade_history) < self.eval_cfg.evaluation_window_trades:
+        if (
+            self.eval_cfg.evaluation_window_trades > 0
+            and len(trade_history) < self.eval_cfg.evaluation_window_trades
+        ):
             if not trade_history:
                 log.info("No trades available for evaluation; volume adjustments=%d", len(adjustments))
             else:
