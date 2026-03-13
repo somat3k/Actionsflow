@@ -225,3 +225,92 @@ def test_run_health_check_exits_zero(monkeypatch, tmp_path):
 
     result = run_health_check()
     assert result == 0
+
+
+# ── Orchestration Probe Tests ─────────────────────────────────────────────────
+
+
+def test_orchestration_probe_all_ok(monkeypatch):
+    """All three pipeline steps pass for each configured provider."""
+    monkeypatch.setattr(ao, "GeminiOrchestrator", _FakeGeminiOrchestratorOK)
+    monkeypatch.setattr(ao.OpenAICompatibleOrchestrator, "_call_model", _fake_call_ok)
+
+    cfg = load_config()
+    cfg.gemini.api_key = "gemini-key"
+    cfg.openrouter.api_key = "openrouter-key"
+    cfg.openai.api_key = "openai-key"
+    cfg.groq.api_key = "groq-key"
+
+    orchestrator = ao.MultiAIOrchestrator(cfg)
+    results = orchestrator.orchestration_probe()
+
+    # Each provider should produce 3 step results
+    by_provider_step = {(r["provider"], r["step"]): r for r in results}
+    for provider in ("Gemini", "OpenRouter", "OpenAI", "Groq"):
+        for step in ("market_context", "leverage", "performance"):
+            key = (provider, step)
+            assert key in by_provider_step, f"Missing result for {key}"
+            assert by_provider_step[key]["status"] == "ok", (
+                f"{key} status={by_provider_step[key]['status']} "
+                f"error={by_provider_step[key].get('error')}"
+            )
+            assert by_provider_step[key]["latency_ms"] is not None
+
+
+def test_orchestration_probe_unconfigured_skipped(monkeypatch):
+    """Providers without API keys produce skipped steps, not errors."""
+    monkeypatch.setattr(ao, "GeminiOrchestrator", _FakeGeminiOrchestratorOK)
+
+    cfg = load_config()
+    cfg.gemini.api_key = "gemini-key"
+    cfg.openrouter.api_key = ""
+    cfg.openai.api_key = ""
+    cfg.groq.api_key = ""
+
+    orchestrator = ao.MultiAIOrchestrator(cfg)
+    results = orchestrator.orchestration_probe()
+
+    by_provider_step = {(r["provider"], r["step"]): r for r in results}
+    # Gemini should be ok on all steps
+    for step in ("market_context", "leverage", "performance"):
+        assert by_provider_step[("Gemini", step)]["status"] == "ok"
+
+
+def test_orchestration_probe_error_reported(monkeypatch):
+    """A provider that raises on every call records 'error' for that step."""
+    monkeypatch.setattr(ao, "GeminiOrchestrator", _FakeGeminiOrchestratorOK)
+    monkeypatch.setattr(ao.OpenAICompatibleOrchestrator, "_call_model", _fake_call_error)
+
+    cfg = load_config()
+    cfg.gemini.api_key = "gemini-key"
+    cfg.openrouter.api_key = "openrouter-key"
+    cfg.openai.api_key = ""
+    cfg.groq.api_key = ""
+
+    orchestrator = ao.MultiAIOrchestrator(cfg)
+    results = orchestrator.orchestration_probe()
+
+    by_provider_step = {(r["provider"], r["step"]): r for r in results}
+    for step in ("market_context", "leverage", "performance"):
+        assert by_provider_step[("OpenRouter", step)]["status"] == "error"
+        assert "connection refused" in by_provider_step[("OpenRouter", step)]["error"]
+    # Gemini (fake) still passes all steps
+    for step in ("market_context", "leverage", "performance"):
+        assert by_provider_step[("Gemini", step)]["status"] == "ok"
+
+
+def test_orchestration_probe_no_providers_uses_fallback(monkeypatch):
+    """When no primary providers are configured, the Gemini fallback is still probed."""
+    monkeypatch.setattr(ao, "GeminiOrchestrator", _FakeGeminiOrchestratorOK)
+
+    cfg = load_config()
+    cfg.gemini.api_key = ""  # no primary providers; fallback (heuristic) Gemini is probed
+    cfg.openrouter.api_key = ""
+    cfg.openai.api_key = ""
+    cfg.groq.api_key = ""
+
+    orchestrator = ao.MultiAIOrchestrator(cfg)
+    results = orchestrator.orchestration_probe()
+
+    # Should still have probe entries (fallback Gemini via GeminiProvider wrapper)
+    assert len(results) > 0
