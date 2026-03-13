@@ -130,15 +130,18 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Restore persisted state (broker state, models, trade history)
+      # Restore persisted state (broker state, models, trade history).
+      # The restore key uses a broad prefix so it always picks up the most
+      # recent entry saved by a previous run (see "Save trading state" below).
       - name: Restore trading state
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             .trading_state/
             models/
-          key: trading-state-${{ needs.setup.outputs.trading_mode }}-${{ github.ref_name }}
+          key: trading-state-${{ needs.setup.outputs.trading_mode }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
+            trading-state-${{ needs.setup.outputs.trading_mode }}-${{ github.ref_name }}-
             trading-state-${{ needs.setup.outputs.trading_mode }}-
 
       - name: Create results directory
@@ -210,7 +213,14 @@ jobs:
             exit 1
           fi
 
-      # Persist updated state
+      # Persist updated state.
+      # Always use a unique save key (run_id) so this run's state – including
+      # the refreshed training:last_run SQLite entry – is stored as a new cache
+      # entry.  The restore step above uses a prefix-based restore-key to pick
+      # up the newest entry on the next run.  Without a unique key the cache
+      # backend would reject the save (cache entries are immutable) and the
+      # trading state would never advance between runs, causing every signal
+      # cycle to repeat the same stale-model inline-retrain in a wormhole loop.
       - name: Save trading state
         uses: actions/cache/save@v4
         if: always()
@@ -218,7 +228,7 @@ jobs:
           path: |
             .trading_state/
             models/
-          key: trading-state-${{ needs.setup.outputs.trading_mode }}-${{ github.ref_name }}
+          key: trading-state-${{ needs.setup.outputs.trading_mode }}-${{ github.ref_name }}-${{ github.run_id }}
 
       # Upload results as artifacts for auditing
       - name: Upload results
