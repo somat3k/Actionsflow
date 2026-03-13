@@ -79,8 +79,8 @@ class DataConfig:
     macro_interval: str = "15m"
     hourly_interval: str = "1h"
     daily_interval: str = "1d"
-    lookback_candles: int = 500
-    training_lookback_candles: int = 5000
+    lookback_candles: int = 300
+    training_lookback_candles: int = 300
     dataset_dir: str = "datasets"
     dataset_format: str = "safetensors"
     historical_csv_dir: str = "datasets/csv"
@@ -343,7 +343,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         except ValueError as exc:
             raise ValueError("LOOKBACK_CANDLES must be an integer value") from exc
     else:
-        training_lookback = int(lookback.get("training_candles", lookback.get("candles", 500)))
+        training_lookback = int(lookback.get("training_candles", lookback.get("candles", 300)))
     data = DataConfig(
         hyperliquid_api_url=os.environ.get(
             "HYPERLIQUID_API_URL",
@@ -355,7 +355,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         macro_interval=os.environ.get("MACRO_INTERVAL", intervals.get("macro", "15m")),
         hourly_interval=os.environ.get("HOURLY_INTERVAL", intervals.get("hourly", "1h")),
         daily_interval=os.environ.get("DAILY_INTERVAL", intervals.get("daily", "1d")),
-        lookback_candles=int(lookback.get("candles", 500)),
+        lookback_candles=int(lookback.get("candles", 300)),
         training_lookback_candles=training_lookback,
         dataset_dir=os.environ.get("DATASET_DIR", dataset_raw.get("dir", "datasets")),
         dataset_format=os.environ.get("DATASET_FORMAT", dataset_raw.get("format", "safetensors")),

@@ -168,8 +168,8 @@ data:
 
   # Lookback periods for feature engineering
   lookback:
-    candles: 500                      # Number of candles for features
-    training_candles: 5000            # Higher-range training history (extended for better models)
+    candles: 300                      # Number of candles for features (fits limited history)
+    training_candles: 300             # Training history window (aligns with available candles)
     funding_periods: 48               # Funding rate history
     trade_depth: 20                   # Order book levels
 

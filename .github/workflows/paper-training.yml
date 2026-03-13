@@ -31,7 +31,7 @@ on:
       lookback_candles:
         description: "Number of candles to use for training"
         required: false
-        default: "2000"
+        default: "300"
       training_epochs:
         description: "Number of training epochs"
         required: false
@@ -93,7 +93,7 @@ jobs:
       - name: Set training environment
         run: |
           echo "TRAINING_SYMBOLS=${{ inputs.symbols || 'BTC,ETH,SOL,ARB,ZRO,AAVE,FLOKI,SHIB,XAUT' }}" >> "$GITHUB_ENV"
-          echo "LOOKBACK_CANDLES=${{ inputs.lookback_candles || '2000' }}" >> "$GITHUB_ENV"
+          echo "LOOKBACK_CANDLES=${{ inputs.lookback_candles || '300' }}" >> "$GITHUB_ENV"
           echo "TRAINING_EPOCHS=${{ inputs.training_epochs || '3' }}" >> "$GITHUB_ENV"
           echo "FORCE_RETRAIN=${{ inputs.force_retrain || 'false' }}" >> "$GITHUB_ENV"
 
@@ -175,4 +175,3 @@ jobs:
               }
             });
             core.info('Dispatched quantum_trade_signal after training');
-
