@@ -244,8 +244,8 @@ class Evaluator:
         volume_adjustments = self._generate_trade_volume_adjustments(metrics)
         adjustments.extend(volume_adjustments)
 
-        # When min_window <= 0, the minimum-trade gate is disabled so adjustments
-        # can run on any amount of trade history.
+        # When evaluation_window_trades is <= 0, the minimum-trade gate is
+        # disabled so adjustments can run on any amount of trade history.
         min_window = self.eval_cfg.evaluation_window_trades
         if min_window > 0:
             if len(trade_history) < min_window:

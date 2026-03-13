@@ -151,6 +151,15 @@ class TestEvaluatorEvaluate:
         assert threshold_adj
         assert threshold_adj[0]["new_value"] > threshold_adj[0]["old_value"]
 
+    def test_min_trade_gate_blocks_full_adjustments(self, evaluator):
+        evaluator.eval_cfg.evaluation_window_trades = 50
+        evaluator.eval_cfg.min_trades_per_day = 0
+        trades = _good_trade_history(n=10, win_rate=0.30)
+        m, adj = evaluator.evaluate(trades, 10_000.0, 9_500.0)
+        assert m.win_rate < evaluator.eval_cfg.min_win_rate
+        assert m.total_return_pct < 0
+        assert adj == []
+
     def test_good_performance_no_negative_adjustments(self, evaluator):
         # High win rate + good Sharpe → should not reduce leverage
         trades = _good_trade_history(n=60, win_rate=0.70)
