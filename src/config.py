@@ -178,10 +178,8 @@ class EvaluationConfig:
     evaluation_window_trades: int = 50
     # Trade volume targets (per day); defaults align with high-frequency paper
     # evaluation targets. WARNING: typical strategies should tune this much lower
-    # (e.g., 10-50 trades/day). Set both bounds <=0 to disable volume adjustments,
-    # or set one bound <=0 to disable only that side.
+    # (e.g., 10-50 trades/day). Set <=0 to disable volume adjustments.
     min_trades_per_day: int = 50
-    max_trades_per_day: int = 150
     # Stabs/pierces: short-window early-warning checks
     stabs_enabled: bool = True
     stabs_window_trades: int = 10
@@ -503,8 +501,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         min_profit_factor=float(thresholds.get("min_profit_factor", 1.20)),
         auto_adjust_enabled=bool(auto_adj.get("enabled", True)),
         evaluation_window_trades=int(auto_adj.get("evaluation_window_trades", 50)),
-        min_trades_per_day=int(trade_volume_raw.get("min_trades_per_day", 700)),
-        max_trades_per_day=int(trade_volume_raw.get("max_trades_per_day", 2000)),
+        min_trades_per_day=int(trade_volume_raw.get("min_trades_per_day", 50)),
         stabs_enabled=bool(stabs_raw.get("enabled", True)),
         stabs_window_trades=int(stabs_raw.get("window_trades", 10)),
         stabs_min_win_rate=float(stabs_raw.get("min_win_rate", 0.35)),

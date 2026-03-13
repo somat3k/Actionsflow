@@ -165,7 +165,6 @@ class TestEvaluatorEvaluate:
 
     def test_zero_trades_relaxes_signal_filters(self, evaluator):
         evaluator.eval_cfg.min_trades_per_day = 5
-        evaluator.eval_cfg.max_trades_per_day = 10
         m, adj = evaluator.evaluate([], 10_000.0, 10_000.0)
         params = {a["parameter"] for a in adj}
         assert "ml.long_threshold" in params
@@ -174,7 +173,6 @@ class TestEvaluatorEvaluate:
 
     def test_low_trade_rate_relaxes_filters(self, evaluator):
         evaluator.eval_cfg.min_trades_per_day = 5
-        evaluator.eval_cfg.max_trades_per_day = 10
         _set_permissive_thresholds(evaluator)
 
         start = 1_700_000_000_000
@@ -193,9 +191,8 @@ class TestEvaluatorEvaluate:
         assert threshold_adj
         assert threshold_adj[0]["new_value"] < threshold_adj[0]["old_value"]
 
-    def test_high_trade_rate_tightens_filters(self, evaluator):
+    def test_high_trade_rate_no_volume_adjustment(self, evaluator):
         evaluator.eval_cfg.min_trades_per_day = 1
-        evaluator.eval_cfg.max_trades_per_day = 5
         start = 1_700_000_000_000
         trades = [
             _make_trade(
@@ -206,9 +203,7 @@ class TestEvaluatorEvaluate:
             for i in range(10)
         ]
         m, adj = evaluator.evaluate(trades, 10_000.0, 10_500.0)
-        threshold_adj = [a for a in adj if a["parameter"] == "ml.long_threshold"]
-        assert threshold_adj
-        assert threshold_adj[0]["new_value"] > threshold_adj[0]["old_value"]
+        assert adj == []
 
     def test_passes_thresholds_good_metrics(self, evaluator):
         m = PerformanceMetrics(
