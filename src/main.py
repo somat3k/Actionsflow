@@ -323,36 +323,79 @@ def _ensure_model_ready(
 ) -> bool:
     """Return True when a model is ready; False if load/training cannot provide one.
 
+    When training is needed (first run or scheduled retrain), all configured
+    timeframes are fetched and multi-timeframe training is used when
+    ``training_epochs`` > 1.  This matches the richer training used by
+    ``run_training()`` so that models produced during signal cycles are of
+    the same quality as those from dedicated training runs.
+
     Records training timestamps when retraining succeeds.
     """
+    from src.dataset_manager import DatasetManager  # deferred to avoid circular issues
+
     loaded = ensemble.load(symbol)
     is_scheduled_retrain_due = _should_retrain(cfg, db, symbol)
     needs_initial_train = not loaded
     should_train = is_scheduled_retrain_due or needs_initial_train
     if should_train:
         action = "Training" if needs_initial_train else "Retraining"
-        log.info("%s model for %s ...", action, symbol)
-        retrain_df = fetcher.fetch_candles(
-            symbol,
+        log.info("%s model for %s (multi-timeframe) …", action, symbol)
+
+        # Fetch data for all configured timeframes so the model benefits from
+        # the same multi-timeframe context used in dedicated training runs.
+        dataset_mgr = DatasetManager(cfg, db)
+        all_timeframes = [
             cfg.data.primary_interval,
-            lookback_candles=cfg.data.lookback_candles,
-        )
-        if retrain_df.empty:
-            log.warning("No data for %s – skipping retraining", symbol)
-        else:
+            cfg.data.secondary_interval,
+            cfg.data.macro_interval,
+            cfg.data.hourly_interval,
+            cfg.data.daily_interval,
+        ]
+        tf_dataframes: Dict[str, Any] = {}
+        for tf in all_timeframes:
             try:
-                ensemble.train(retrain_df, symbol=symbol)
-            except Exception as exc:
-                log.warning(
-                    "%s failed for %s (%s): %s",
-                    action,
-                    symbol,
-                    type(exc).__name__,
-                    exc,
+                df_tf = dataset_mgr.get_or_fetch_dataset(
+                    fetcher, symbol, tf,
+                    lookback_candles=cfg.data.training_lookback_candles,
+                    force_refresh=needs_initial_train,
                 )
-                return loaded
-            _record_training_time(db, [symbol])
-            loaded = True
+                if not df_tf.empty:
+                    tf_dataframes[tf] = df_tf
+            except Exception as exc:
+                log.debug("Skipping %s@%s during ensure_model_ready: %s", symbol, tf, exc)
+
+        if not tf_dataframes:
+            log.warning("No data for any timeframe of %s – skipping retraining", symbol)
+            return loaded
+
+        primary_df = tf_dataframes.get(cfg.data.primary_interval)
+        if primary_df is None:
+            primary_df = next(iter(tf_dataframes.values()))
+
+        try:
+            training_epochs = max(1, cfg.ml.training_epochs)
+            reinforcement_alpha = cfg.ml.reinforcement_alpha
+            if training_epochs > 1 and len(tf_dataframes) > 1:
+                ensemble.train_multi_timeframe_with_progression(
+                    tf_dataframes,
+                    symbol=symbol,
+                    epochs=training_epochs,
+                    reinforcement_alpha=reinforcement_alpha,
+                    primary_tf=cfg.data.primary_interval,
+                )
+            else:
+                ensemble.train(primary_df, symbol=symbol)
+        except Exception as exc:
+            log.warning(
+                "%s failed for %s (%s): %s",
+                action,
+                symbol,
+                type(exc).__name__,
+                exc,
+            )
+            return loaded
+        _record_training_time(db, [symbol])
+        loaded = True
     return loaded
 
 
@@ -428,6 +471,47 @@ def run_training(config_path: Optional[Path] = None) -> int:
         cfg.data.daily_interval,
     ]
 
+    # ── Phase 1: Pre-fetch all symbol data before training begins ─────────
+    # Fetch data for every symbol upfront so that training runs without
+    # waiting on network I/O between symbols (sequential, low-latency).
+    log.info(
+        "── Phase 1: Pre-fetching data for %d crypto symbols × %d timeframes ──",
+        len(enabled_markets), len(all_timeframes),
+    )
+    all_tf_dataframes: Dict[str, Dict[str, Any]] = {}
+    prefetch_bar = _progress(
+        enabled_markets,
+        desc="Pre-fetch",
+        total=len(enabled_markets),
+        unit="symbol",
+        leave=False,
+    )
+    for market in prefetch_bar:
+        symbol = market.symbol
+        if hasattr(prefetch_bar, "set_postfix"):
+            prefetch_bar.set_postfix(symbol=symbol)
+        tf_dfs: Dict[str, Any] = {}
+        for tf in all_timeframes:
+            log.debug("  Pre-fetching %s@%s …", symbol, tf)
+            df_tf = dataset_mgr.get_or_fetch_dataset(
+                fetcher,
+                symbol,
+                tf,
+                lookback_candles=cfg.data.training_lookback_candles,
+                force_refresh=force_retrain,
+            )
+            if not df_tf.empty:
+                tf_dfs[tf] = df_tf
+        if tf_dfs:
+            all_tf_dataframes[symbol] = tf_dfs
+        else:
+            log.warning("No data pre-fetched for %s – will skip training", symbol)
+
+    log.info(
+        "── Phase 2: Training %d symbols sequentially (one after another) ──",
+        len(all_tf_dataframes),
+    )
+
     results: Dict[str, Any] = {}
     epoch_scores: Dict[str, Any] = {}
 
@@ -441,37 +525,28 @@ def run_training(config_path: Optional[Path] = None) -> int:
             except Exception as exc:
                 log.warning("Index training failed for %s: %s", idx_sym, exc)
 
-    # ── Session-level progress bar (symbols) ──────────────────────────────
+    # ── Phase 2: Train each symbol sequentially using pre-fetched data ────
+    # Symbols are trained one after another (no parallel fits) so each
+    # training run completes fully before the next symbol starts.  This
+    # avoids data-access contention and produces stable model artefacts that
+    # capture the most recent market intervals.
+    ready_markets = [m for m in enabled_markets if m.symbol in all_tf_dataframes]
     session_bar = _progress(
-        enabled_markets,
+        ready_markets,
         desc="Training session",
-        total=len(enabled_markets),
+        total=len(ready_markets),
         unit="symbol",
         leave=True,
     )
-    for market in session_bar:
+    total_ready = len(ready_markets)
+    for seq_idx, market in enumerate(session_bar, start=1):
         symbol = market.symbol
         if hasattr(session_bar, "set_postfix"):
             session_bar.set_postfix(symbol=symbol)
-        log.info("── Symbol: %s ──", symbol)
+        log.info("── Training symbol %s (%d/%d) ──", symbol, seq_idx, total_ready)
 
-        # ── Fetch multi-timeframe training data ───────────────────────────
-        tf_dataframes: Dict[str, Any] = {}
-        for tf in all_timeframes:
-            log.info("  Fetching %s@%s …", symbol, tf)
-            df_tf = dataset_mgr.get_or_fetch_dataset(
-                fetcher,
-                symbol,
-                tf,
-                lookback_candles=cfg.data.training_lookback_candles,
-                force_refresh=force_retrain,
-            )
-            if not df_tf.empty:
-                tf_dataframes[tf] = df_tf
-
-        if not tf_dataframes:
-            log.warning("No data for any timeframe of %s – skipping", symbol)
-            continue
+        # Use the already-fetched dataframes (no additional network I/O).
+        tf_dataframes = all_tf_dataframes[symbol]
 
         primary_df = tf_dataframes.get(cfg.data.primary_interval)
         if primary_df is None or primary_df.empty:
@@ -504,7 +579,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
         "## 🤖 Model Training Results\n\n"
         f"**Epochs:** {training_epochs} | "
         f"**Timeframes:** {', '.join(all_timeframes)}\n\n"
-        "| Symbol | XGB | GB | RF | Linear | LSTM |\n"
+        "| Symbol | NN (primary) | XGB | GB | RF | Linear |\n"
         "|---|---|---|---|---|---|\n"
     )
     for sym, scores in results.items():
@@ -512,8 +587,8 @@ def run_training(config_path: Optional[Path] = None) -> int:
             v = scores.get(key)
             return f"{v:.4f}" if isinstance(v, float) else "N/A"
         row = (
-            f"| {sym} | {_fmt('xgb')} | {_fmt('gb')} | {_fmt('rf')} "
-            f"| {_fmt('linear')} | {_fmt('lstm')} |\n"
+            f"| {sym} | **{_fmt('lstm')}** | {_fmt('xgb')} | {_fmt('gb')} "
+            f"| {_fmt('rf')} | {_fmt('linear')} |\n"
         )
         summary += row
     _print_github_summary(summary)
@@ -825,11 +900,12 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
             cfg, ensemble, delegation_agent, snapshot, prior_regime
         )
         log.info(
-            "%s ML signal: %s (conf=%.3f, agree=%.2f, delegated_to=%s)",
+            "%s ML signal: %s (conf=%.3f, agree=%.2f, nn_primary=%s, delegated_to=%s)",
             symbol,
             {0: "FLAT", 1: "LONG", 2: "SHORT"}[ml_signal["signal"]],
             ml_signal["confidence"],
             ml_signal.get("agreement", 0.0),
+            ml_signal.get("nn_decision", False),
             ml_signal.get("delegated_to", "ensemble"),
         )
 

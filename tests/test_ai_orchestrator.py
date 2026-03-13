@@ -9,7 +9,8 @@ class _FakeGeminiOrchestrator:
         self._model = object()
 
 
-def test_provider_order_includes_openai(monkeypatch):
+def test_provider_order_groq_first(monkeypatch):
+    """Groq is the primary (first) provider; other providers follow in fallback order."""
     monkeypatch.setattr(ao, "GeminiOrchestrator", _FakeGeminiOrchestrator)
 
     cfg = load_config()
@@ -21,8 +22,11 @@ def test_provider_order_includes_openai(monkeypatch):
     orchestrator = ao.MultiAIOrchestrator(cfg)
     providers = orchestrator._providers
 
-    assert isinstance(providers[0], ao.GeminiProvider)
-    assert [provider.name for provider in providers[1:]] == ["OpenRouter", "OpenAI", "Groq"]
+    # Groq must be first (primary fast-path provider).
+    assert isinstance(providers[0], ao.OpenAICompatibleOrchestrator)
+    assert providers[0].name == "Groq"
+    # Remaining providers are Gemini, OpenRouter, OpenAI in fallback order.
+    assert [p.name for p in providers[1:]] == ["Gemini", "OpenRouter", "OpenAI"]
 
 
 def test_provider_order_excludes_openai_without_key(monkeypatch):
@@ -37,4 +41,6 @@ def test_provider_order_excludes_openai_without_key(monkeypatch):
     orchestrator = ao.MultiAIOrchestrator(cfg)
     providers = orchestrator._providers
 
-    assert [provider.name for provider in providers[1:]] == ["OpenRouter", "Groq"]
+    # Groq first, then Gemini, then OpenRouter (no OpenAI – no key).
+    assert providers[0].name == "Groq"
+    assert [p.name for p in providers[1:]] == ["Gemini", "OpenRouter"]

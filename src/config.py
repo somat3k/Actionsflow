@@ -89,7 +89,7 @@ class DataConfig:
 
 
 _DEFAULT_MODEL_WEIGHTS: Dict[str, float] = {
-    "xgb": 0.25, "gb": 0.10, "rf": 0.15, "lstm": 0.20, "linear": 0.10, "tree_clf": 0.20,
+    "xgb": 0.20, "gb": 0.08, "rf": 0.12, "lstm": 0.35, "linear": 0.08, "tree_clf": 0.17,
 }
 
 
@@ -109,6 +109,9 @@ class MLConfig:
     # ExtraTrees (tree-classifier-decision-making-system) hyperparameters
     extra_trees_n_estimators: int = 200
     extra_trees_max_depth: int = 10
+    # Neural-Network priority: when NN confidence exceeds this threshold the NN
+    # signal overrides the weighted-ensemble result for fast decision making.
+    nn_override_threshold: float = 0.65
     # Infinity-loop supervised learning
     infinity_loop_enabled: bool = True
     infinity_loop_max_epochs: int = 0         # 0 = infinite
@@ -135,7 +138,7 @@ class GroqConfig:
     api_url: str = "https://api.groq.com/openai/v1/chat/completions"
     temperature: float = 0.1
     max_output_tokens: int = 2048
-    timeout_seconds: int = 30
+    timeout_seconds: int = 15
 
 
 @dataclass
