@@ -147,6 +147,7 @@ class TestEvaluatorEvaluate:
         m, adj = evaluator.evaluate(trades, 10_000.0, 9_500.0)
         threshold_adj = [a for a in adj if "long_threshold" in a["parameter"]]
         assert threshold_adj
+        assert threshold_adj[0]["new_value"] > threshold_adj[0]["old_value"]
 
     def test_good_performance_no_negative_adjustments(self, evaluator):
         # High win rate + good Sharpe → should not reduce leverage
