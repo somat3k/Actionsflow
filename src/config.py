@@ -380,7 +380,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     # Load per-model weights from YAML if present.
     models_raw = ml_raw.get("models", {})
     default_weights = {
-        "xgb": 0.25, "gb": 0.10, "rf": 0.15, "lstm": 0.20, "linear": 0.10, "tree_clf": 0.20,
+        "xgb": 0.20, "gb": 0.08, "rf": 0.12, "lstm": 0.35, "linear": 0.08, "tree_clf": 0.17,
     }
     yaml_name_map = {
         "xgboost": "xgb", "gradient_boost": "gb", "random_forest": "rf",
@@ -409,6 +409,9 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         ),
         extra_trees_max_depth=int(
             models_raw.get("extra_trees", {}).get("max_depth", 10)
+        ),
+        nn_override_threshold=float(
+            signals.get("nn_override_threshold", 0.65)
         ),
         infinity_loop_enabled=bool(infinity_raw.get("enabled", True)),
         infinity_loop_max_epochs=int(infinity_raw.get("max_epochs", 0)),

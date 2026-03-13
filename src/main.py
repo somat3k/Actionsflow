@@ -357,7 +357,7 @@ def _ensure_model_ready(
                 df_tf = dataset_mgr.get_or_fetch_dataset(
                     fetcher, symbol, tf,
                     lookback_candles=cfg.data.training_lookback_candles,
-                    force_refresh=needs_initial_train,
+                    force_refresh=should_train,  # always refresh on any train/retrain
                 )
                 if not df_tf.empty:
                     tf_dataframes[tf] = df_tf

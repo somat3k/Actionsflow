@@ -293,6 +293,9 @@ ml:
     short_threshold: 0.60             # P(short) > 60% to open short
     close_threshold: 0.45             # Close when confidence < 45%
     min_ensemble_agreement: 0.60      # Min fraction of models must agree
+    # Neural-Network priority: when NN max-class confidence >= this value
+    # the NN signal overrides the weighted-ensemble result directly.
+    nn_override_threshold: 0.65
 
   # Training settings
   training:

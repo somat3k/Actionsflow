@@ -933,7 +933,7 @@ class QuantumEnsemble:
         # is used directly.  This gives the NN primary authority over the
         # weighted ensemble for fast, high-confidence decisions.
         nn_decision = False
-        nn_override_threshold = getattr(self.cfg.ml, "nn_override_threshold", 0.65)
+        nn_override_threshold = self.cfg.ml.nn_override_threshold
         if "lstm" in probas:
             nn_proba = probas["lstm"][0]  # shape (3,)
             nn_max_idx = int(np.argmax(nn_proba))
@@ -941,18 +941,22 @@ class QuantumEnsemble:
             if nn_max_conf >= nn_override_threshold:
                 nn_flat, nn_long, nn_short = self._proba_to_fls(nn_proba)
                 if nn_max_idx == 1 and nn_long >= self.cfg.ml.long_threshold:
-                    signal, confidence, flat_prob = 1, nn_long, nn_flat
-                    long_prob, short_prob = nn_long, nn_short
+                    signal, confidence = 1, nn_long
+                    flat_prob, long_prob, short_prob = nn_flat, nn_long, nn_short
+                    nn_decision = True
                 elif nn_max_idx == 2 and nn_short >= self.cfg.ml.short_threshold:
-                    signal, confidence, flat_prob = 2, nn_short, nn_flat
-                    long_prob, short_prob = nn_long, nn_short
+                    signal, confidence = 2, nn_short
+                    flat_prob, long_prob, short_prob = nn_flat, nn_long, nn_short
+                    nn_decision = True
                 elif nn_max_idx == 0:
-                    signal, confidence, flat_prob = 0, nn_flat, nn_flat
-                nn_decision = True
-                log.debug(
-                    "NN override: signal=%d conf=%.4f (threshold=%.2f)",
-                    signal, confidence, nn_override_threshold,
-                )
+                    signal, confidence = 0, nn_flat
+                    flat_prob, long_prob, short_prob = nn_flat, nn_long, nn_short
+                    nn_decision = True
+                if nn_decision:
+                    log.debug(
+                        "NN override: signal=%d conf=%.4f (threshold=%.2f)",
+                        signal, confidence, nn_override_threshold,
+                    )
 
         # Agreement across models
         model_signals = {k: int(np.argmax(probas[k][0])) for k in probas}

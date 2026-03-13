@@ -157,13 +157,13 @@ class GeminiProvider:
 
 
 class MultiAIOrchestrator:
-    """Orchestrates Groq (primary), Gemini, OpenAI, and OpenRouter providers with fallback.
+    """Orchestrates Groq (primary), Gemini, OpenRouter, and OpenAI providers with fallback.
 
     Groq is the primary/default provider for AI inference due to its low-latency
     API.  When Groq responds successfully the result is returned immediately
     without querying other providers, keeping decision-making latency minimal.
     Other providers are queried only when Groq is unavailable or returns no
-    response.
+    response, in the order: Gemini → OpenRouter → OpenAI.
     """
 
     def __init__(self, config: AppConfig) -> None:
@@ -255,14 +255,16 @@ class MultiAIOrchestrator:
         return providers
 
     def _collect(self, method: str, *args) -> List[Dict[str, Any]]:
-        """Query providers sequentially, returning immediately after the primary provider.
+        """Query providers sequentially with a fast-path for the primary provider.
 
         When the primary provider (Groq) is the first in the list and returns a
-        valid response, its result is used immediately without querying the
+        valid response, its result is returned immediately without querying the
         remaining providers.  This minimises end-to-end inference latency for
-        the execute-analyse loop.  If the primary provider fails or returns an
-        empty response, the remaining providers are tried in order and the first
-        successful response is returned.
+        the execute-analyse loop.
+
+        If the primary provider fails or returns an empty response, all remaining
+        providers are tried in order and their successful responses are accumulated
+        into the returned list (used by the merge functions to combine signals).
 
         All provider objects expose a ``name`` attribute (``OpenAICompatibleOrchestrator``
         sets it in ``__init__``; ``GeminiProvider`` defines it as a class attribute).
