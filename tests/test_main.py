@@ -101,6 +101,7 @@ def test_signal_retrains_when_model_stale(test_env, monkeypatch):
     first_symbol = cfg.trading.markets[0].symbol
     assert first_symbol in refreshed
     updated_time = datetime.fromisoformat(refreshed[first_symbol])
+    uncached_db.close()
     assert updated_time > datetime.fromisoformat(stale_time)
 
 
