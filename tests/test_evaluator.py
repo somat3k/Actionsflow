@@ -145,6 +145,8 @@ class TestEvaluatorEvaluate:
         evaluator.eval_cfg.evaluation_window_trades = 0
         trades = _good_trade_history(n=10, win_rate=0.30)
         m, adj = evaluator.evaluate(trades, 10_000.0, 9_500.0)
+        assert m.win_rate < evaluator.eval_cfg.min_win_rate
+        assert m.total_return_pct < 0
         threshold_adj = [a for a in adj if "long_threshold" in a["parameter"]]
         assert threshold_adj
         assert threshold_adj[0]["new_value"] > threshold_adj[0]["old_value"]
