@@ -168,8 +168,8 @@ data:
 
   # Lookback periods for feature engineering
   lookback:
-    candles: 500                      # Number of candles for features
-    training_candles: 5000            # Higher-range training history (extended for better models)
+    candles: 300                      # Number of candles for features (fits limited history)
+    training_candles: 300             # Training history window (aligns with available candles)
     funding_periods: 48               # Funding rate history
     trade_depth: 20                   # Order book levels
 
@@ -390,10 +390,18 @@ evaluation:
     max_drawdown_pct: 0.25
     min_profit_factor: 1.20
 
+  # Target daily trade volume (paper trading). Defaults are intentionally
+  # conservative to avoid limiting strategy throughput. WARNING: typical
+  # strategies should tune this much lower (e.g., 10-50 trades/day). Set <=0
+  # to disable adjustments.
+  trade_volume:
+    min_trades_per_day: 50
+
   # Auto-adjustment triggers
   auto_adjust:
     enabled: true
-    evaluation_window_trades: 50
+    # Minimum trades before full auto-adjustments; set <=0 to disable gating.
+    evaluation_window_trades: 0
     adjust_if_sharpe_below: 0.8
     adjust_if_drawdown_above: 0.15
     leverage_reduce_step: 5

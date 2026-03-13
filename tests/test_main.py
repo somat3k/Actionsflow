@@ -95,11 +95,15 @@ def test_signal_retrains_when_model_stale(test_env, monkeypatch):
         inst.train_calls for inst in DummyEnsemble.instances
     ), "Expected retraining when cached timestamp is stale"
 
-    updated = db.get_cache("training:last_run")
-    assert isinstance(updated, dict)
-    first_symbol = cfg.trading.markets[0].symbol
-    assert first_symbol in updated
-    updated_time = datetime.fromisoformat(updated[first_symbol])
+    uncached_db = DatabaseManager(db_path, cache_enabled=False)
+    try:
+        current_training_state = uncached_db.get_cache("training:last_run")
+        assert isinstance(current_training_state, dict)
+        first_symbol = cfg.trading.markets[0].symbol
+        assert first_symbol in current_training_state
+        updated_time = datetime.fromisoformat(current_training_state[first_symbol])
+    finally:
+        uncached_db.close()
     assert updated_time > datetime.fromisoformat(stale_time)
 
 

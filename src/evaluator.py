@@ -167,6 +167,10 @@ def compute_metrics(
 class Evaluator:
     """Evaluates trading performance and emits concrete adjustment recommendations."""
 
+    _THRESHOLD_RANGE = (0.50, 0.85)
+    _AGREEMENT_RANGE = (0.40, 0.85)
+    _MIN_TRADE_RATE_THRESHOLD = 0.01
+
     def __init__(self, config: AppConfig) -> None:
         self.cfg = config
         self.eval_cfg: EvaluationConfig = config.evaluation
@@ -237,15 +241,28 @@ class Evaluator:
         if not self.eval_cfg.auto_adjust_enabled:
             return metrics, adjustments
 
-        if len(trade_history) < self.eval_cfg.evaluation_window_trades:
-            log.info(
-                "Not enough trades for evaluation (%d < %d)",
-                len(trade_history),
-                self.eval_cfg.evaluation_window_trades,
-            )
-            return metrics, adjustments
+        volume_adjustments = self._generate_trade_volume_adjustments(metrics)
+        adjustments.extend(volume_adjustments)
 
-        adjustments = self._generate_adjustments(metrics)
+        # When evaluation_window_trades is <= 0, the minimum-trade gate is
+        # disabled so adjustments can run on any amount of trade history.
+        min_window = self.eval_cfg.evaluation_window_trades
+        if min_window > 0:
+            if len(trade_history) < min_window:
+                if not trade_history:
+                    log.info(
+                        "No trades available for evaluation; volume adjustments=%d",
+                        len(adjustments),
+                    )
+                else:
+                    log.info(
+                        "Not enough trades for evaluation (%d < %d)",
+                        len(trade_history),
+                        min_window,
+                    )
+                return metrics, adjustments
+
+        adjustments.extend(self._generate_adjustments(metrics))
         return metrics, adjustments
 
     def print_report(
@@ -307,6 +324,95 @@ class Evaluator:
             and m.max_drawdown_pct <= self.eval_cfg.max_drawdown_pct
             and m.profit_factor >= self.eval_cfg.min_profit_factor
         )
+
+    def _generate_trade_volume_adjustments(
+        self, m: PerformanceMetrics
+    ) -> List[Dict[str, Any]]:
+        min_target = self.eval_cfg.min_trades_per_day
+
+        if min_target <= 0:
+            return []
+
+        if m.total_trades == 0:
+            return self._tune_signal_thresholds(
+                direction="loosen",
+                reason="Zero trades recorded: relaxing signal filters to locate opportunities",
+            )
+
+        # Guard against extremely sparse histories where trade rate is near zero.
+        if m.trades_per_day <= self._MIN_TRADE_RATE_THRESHOLD:
+            log.info(
+                "Trade volume metrics unavailable or too sparse (%.4f/day); "
+                "skipping trade-volume adjustments.",
+                m.trades_per_day,
+            )
+            return []
+
+        if m.trades_per_day < min_target:
+            if self._passes_thresholds(m):
+                return self._tune_signal_thresholds(
+                    direction="loosen",
+                    reason=(
+                        f"Trade rate {m.trades_per_day:.1f}/day below target "
+                        f">= {min_target}/day: easing filters to grow opportunity flow"
+                    ),
+                )
+            log.info(
+                "Trade rate %.1f/day below target but performance below thresholds; "
+                "keeping filters to protect equity.",
+                m.trades_per_day,
+            )
+            return []
+
+        return []
+
+    def _tune_signal_thresholds(
+        self, *, direction: str, reason: str
+    ) -> List[Dict[str, Any]]:
+        adjustments = []
+        step_thresh = abs(self.cfg.ml.infinity_hp_adjust_step_threshold)
+        step_agree = abs(self.cfg.ml.infinity_hp_adjust_agreement_step)
+        if step_thresh <= 0 and step_agree <= 0:
+            return adjustments
+
+        if direction not in {"loosen", "tighten"}:
+            raise ValueError(
+                f"direction must be 'loosen' or 'tighten', got: {direction}"
+            )
+
+        threshold_range = self._THRESHOLD_RANGE
+        agreement_range = self._AGREEMENT_RANGE
+        direction_multiplier = -1 if direction == "loosen" else 1
+
+        def _append_adjustment(
+            parameter: str, old_value: float, step: float, value_range: Tuple[float, float]
+        ) -> None:
+            if step <= 0:
+                return
+            new_value = np.clip(
+                old_value + direction_multiplier * step, value_range[0], value_range[1]
+            )
+            if new_value == old_value:
+                return
+            adjustments.append(
+                {
+                    "parameter": parameter,
+                    "old_value": old_value,
+                    "new_value": float(new_value),
+                    "reason": reason,
+                }
+            )
+
+        _append_adjustment("ml.long_threshold", self.cfg.ml.long_threshold, step_thresh, threshold_range)
+        _append_adjustment("ml.short_threshold", self.cfg.ml.short_threshold, step_thresh, threshold_range)
+        _append_adjustment(
+            "ml.min_ensemble_agreement",
+            self.cfg.ml.min_ensemble_agreement,
+            step_agree,
+            agreement_range,
+        )
+
+        return adjustments
 
     def _generate_adjustments(
         self, m: PerformanceMetrics
