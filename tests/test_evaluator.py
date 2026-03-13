@@ -12,6 +12,10 @@ import pytest
 from src.config import load_config
 from src.evaluator import Evaluator, PerformanceMetrics, compute_metrics
 
+MS_PER_MINUTE = 60_000
+MS_PER_HOUR = 60 * MS_PER_MINUTE
+MS_PER_DAY = 24 * MS_PER_HOUR
+
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -25,7 +29,14 @@ def evaluator(config):
     return Evaluator(config)
 
 
-def _make_trade(pnl: float, side="long", symbol="BTC", leverage=15) -> dict:
+def _make_trade(
+    pnl: float,
+    side="long",
+    symbol="BTC",
+    leverage=15,
+    entry_time_ms=1_700_000_000_000,
+    exit_time_ms=1_700_000_000_000 + MS_PER_HOUR,
+) -> dict:
     """Minimal trade dict matching ClosedTrade fields."""
     return {
         "position_id": "test",
@@ -36,8 +47,8 @@ def _make_trade(pnl: float, side="long", symbol="BTC", leverage=15) -> dict:
         "size_contracts": 0.025,
         "size_usd": 1_000.0,
         "leverage": leverage,
-        "entry_time_ms": 1_700_000_000_000,
-        "exit_time_ms": 1_700_000_000_000 + 3_600_000,
+        "entry_time_ms": entry_time_ms,
+        "exit_time_ms": exit_time_ms,
         "pnl": pnl,
         "pnl_pct": pnl / 100.0,
         "fee_usd": 0.45,
@@ -56,6 +67,13 @@ def _good_trade_history(n: int = 60, win_rate: float = 0.6) -> list:
         else:
             trades.append(_make_trade(pnl=-30.0))
     return trades
+
+
+def _set_permissive_thresholds(evaluator: Evaluator) -> None:
+    evaluator.eval_cfg.min_sharpe = -1.0
+    evaluator.eval_cfg.min_win_rate = 0.0
+    evaluator.eval_cfg.max_drawdown_pct = 1.0
+    evaluator.eval_cfg.min_profit_factor = 0.0
 
 
 # ── compute_metrics ───────────────────────────────────────────────────────────
@@ -123,10 +141,24 @@ class TestComputeMetrics:
 # ── Evaluator.evaluate ────────────────────────────────────────────────────────
 
 class TestEvaluatorEvaluate:
-    def test_not_enough_trades_no_adjustments(self, evaluator, config):
-        trades = _good_trade_history(n=10)  # Below eval_window_trades
-        m, adj = evaluator.evaluate(trades, 10_000.0, 10_500.0)
-        assert adj == []  # Not enough trades
+    def test_adjusts_without_minimum_trade_gate(self, evaluator):
+        evaluator.eval_cfg.evaluation_window_trades = 0
+        trades = _good_trade_history(n=10, win_rate=0.30)
+        m, adj = evaluator.evaluate(trades, 10_000.0, 9_500.0)
+        assert m.win_rate < evaluator.eval_cfg.min_win_rate
+        assert m.total_return_pct < 0
+        threshold_adj = [a for a in adj if "long_threshold" in a["parameter"]]
+        assert threshold_adj
+        assert threshold_adj[0]["new_value"] > threshold_adj[0]["old_value"]
+
+    def test_min_trade_gate_blocks_full_adjustments(self, evaluator):
+        evaluator.eval_cfg.evaluation_window_trades = 50
+        evaluator.eval_cfg.min_trades_per_day = 0
+        trades = _good_trade_history(n=10, win_rate=0.30)
+        m, adj = evaluator.evaluate(trades, 10_000.0, 9_500.0)
+        assert m.win_rate < evaluator.eval_cfg.min_win_rate
+        assert m.total_return_pct < 0
+        assert adj == []
 
     def test_good_performance_no_negative_adjustments(self, evaluator):
         # High win rate + good Sharpe → should not reduce leverage
@@ -144,6 +176,50 @@ class TestEvaluatorEvaluate:
         threshold_adj = [a for a in adj if "long_threshold" in a["parameter"]]
         assert len(threshold_adj) >= 1
         assert threshold_adj[0]["new_value"] > threshold_adj[0]["old_value"]
+
+    def test_zero_trades_relaxes_signal_filters(self, evaluator):
+        evaluator.eval_cfg.min_trades_per_day = 5
+        m, adj = evaluator.evaluate([], 10_000.0, 10_000.0)
+        params = {a["parameter"] for a in adj}
+        assert "ml.long_threshold" in params
+        assert "ml.short_threshold" in params
+        assert "ml.min_ensemble_agreement" in params
+
+    def test_low_trade_rate_relaxes_filters(self, evaluator):
+        evaluator.eval_cfg.min_trades_per_day = 5
+        _set_permissive_thresholds(evaluator)
+
+        start = 1_700_000_000_000
+        # Four trades spaced one per day ⇒ ~1 trade/day (< min_trades_per_day=5).
+        trades = [
+            _make_trade(
+                pnl=50.0,
+                entry_time_ms=start + i * MS_PER_DAY,
+                exit_time_ms=start + i * MS_PER_DAY + MS_PER_HOUR,
+            )
+            for i in range(4)
+        ]
+        m, adj = evaluator.evaluate(trades, 10_000.0, 10_200.0)
+        assert evaluator._passes_thresholds(m) is True
+        threshold_adj = [a for a in adj if a["parameter"] == "ml.long_threshold"]
+        assert threshold_adj
+        assert threshold_adj[0]["new_value"] < threshold_adj[0]["old_value"]
+
+    def test_high_trade_rate_no_volume_adjustment(self, evaluator):
+        evaluator.eval_cfg.min_trades_per_day = 1
+        # Gate full performance adjustments so this test only checks volume tuning.
+        evaluator.eval_cfg.evaluation_window_trades = 25
+        start = 1_700_000_000_000
+        trades = [
+            _make_trade(
+                pnl=50.0,
+                entry_time_ms=start + i * 5 * MS_PER_MINUTE,
+                exit_time_ms=start + i * 5 * MS_PER_MINUTE + MS_PER_MINUTE,
+            )
+            for i in range(10)
+        ]
+        m, adj = evaluator.evaluate(trades, 10_000.0, 10_500.0)
+        assert adj == []
 
     def test_passes_thresholds_good_metrics(self, evaluator):
         m = PerformanceMetrics(

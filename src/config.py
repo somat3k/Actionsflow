@@ -79,8 +79,8 @@ class DataConfig:
     macro_interval: str = "15m"
     hourly_interval: str = "1h"
     daily_interval: str = "1d"
-    lookback_candles: int = 500
-    training_lookback_candles: int = 5000
+    lookback_candles: int = 300
+    training_lookback_candles: int = 300
     dataset_dir: str = "datasets"
     dataset_format: str = "safetensors"
     historical_csv_dir: str = "datasets/csv"
@@ -131,7 +131,7 @@ class GeminiConfig:
 @dataclass
 class GroqConfig:
     api_key: str = ""
-    model: str = "llama3-70b-8192"
+    model: str = "llama-3.3-70b-versatile"
     api_url: str = "https://api.groq.com/openai/v1/chat/completions"
     temperature: float = 0.1
     max_output_tokens: int = 2048
@@ -175,7 +175,13 @@ class EvaluationConfig:
     max_drawdown_pct: float = 0.25
     min_profit_factor: float = 1.20
     auto_adjust_enabled: bool = True
-    evaluation_window_trades: int = 50
+    # Minimum trades required before full auto-adjustments; set <=0 to disable
+    # the minimum gate so adjustments can run on any trade history.
+    evaluation_window_trades: int = 0
+    # Trade volume targets (per day); defaults are intentionally conservative to
+    # avoid limiting strategy throughput. WARNING: typical strategies should tune
+    # this much lower (e.g., 10-50 trades/day). Set <=0 to disable adjustments.
+    min_trades_per_day: int = 50
     # Stabs/pierces: short-window early-warning checks
     stabs_enabled: bool = True
     stabs_window_trades: int = 10
@@ -195,8 +201,24 @@ class SystemConfig:
 
 
 @dataclass
+class CacheConfig:
+    """Redis cache configuration.
+
+    When ``redis_url`` is empty the embedded ``fakeredis`` backend is used
+    automatically – no external Redis server is required.
+    Set ``REDIS_URL`` in the environment to connect to an external instance.
+    """
+
+    enabled: bool = True
+    redis_url: str = ""          # Empty = use embedded fakeredis
+    default_ttl_seconds: int = 3600   # 1 hour default TTL; 0 = no expiry
+    namespace: str = "qt"
+
+
+@dataclass
 class AppConfig:
     system: SystemConfig = field(default_factory=SystemConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
     data: DataConfig = field(default_factory=DataConfig)
     ml: MLConfig = field(default_factory=MLConfig)
@@ -227,6 +249,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             raw = yaml.safe_load(fh) or {}
 
     system_raw = raw.get("system", {})
+    cache_raw = raw.get("cache", {})
     trading_raw = raw.get("trading", {})
     data_raw = raw.get("data", {})
     ml_raw = raw.get("ml", {})
@@ -320,7 +343,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         except ValueError as exc:
             raise ValueError("LOOKBACK_CANDLES must be an integer value") from exc
     else:
-        training_lookback = int(lookback.get("training_candles", lookback.get("candles", 500)))
+        training_lookback = int(lookback.get("training_candles", lookback.get("candles", 300)))
     data = DataConfig(
         hyperliquid_api_url=os.environ.get(
             "HYPERLIQUID_API_URL",
@@ -332,7 +355,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         macro_interval=os.environ.get("MACRO_INTERVAL", intervals.get("macro", "15m")),
         hourly_interval=os.environ.get("HOURLY_INTERVAL", intervals.get("hourly", "1h")),
         daily_interval=os.environ.get("DAILY_INTERVAL", intervals.get("daily", "1d")),
-        lookback_candles=int(lookback.get("candles", 500)),
+        lookback_candles=int(lookback.get("candles", 300)),
         training_lookback_candles=training_lookback,
         dataset_dir=os.environ.get("DATASET_DIR", dataset_raw.get("dir", "datasets")),
         dataset_format=os.environ.get("DATASET_FORMAT", dataset_raw.get("format", "safetensors")),
@@ -371,7 +394,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         short_threshold=float(signals.get("short_threshold", 0.60)),
         close_threshold=float(signals.get("close_threshold", 0.45)),
         min_ensemble_agreement=float(signals.get("min_ensemble_agreement", 0.60)),
-        model_save_dir=training.get("model_save_dir", "models"),
+        model_save_dir=os.environ.get("MODEL_SAVE_DIR", training.get("model_save_dir", "models")),
         retrain_interval_hours=int(training.get("retrain_interval_hours", 24)),
         training_epochs=int(os.environ.get("TRAINING_EPOCHS", training.get("epochs", 200))),
         reinforcement_alpha=float(
@@ -408,7 +431,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
 
     groq = GroqConfig(
         api_key=os.environ.get("GROQ_API_KEY", ""),
-        model=os.environ.get("GROQ_MODEL", groq_raw.get("model", "llama3-70b-8192")),
+        model=os.environ.get("GROQ_MODEL", groq_raw.get("model", "llama-3.3-70b-versatile")),
         api_url=os.environ.get(
             "GROQ_API_URL",
             groq_raw.get("api_url", "https://api.groq.com/openai/v1/chat/completions"),
@@ -472,18 +495,29 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     thresholds = eval_raw.get("thresholds", {})
     auto_adj = eval_raw.get("auto_adjust", {})
     stabs_raw = eval_raw.get("stabs", {})
+    trade_volume_raw = eval_raw.get("trade_volume", {})
     evaluation = EvaluationConfig(
         min_sharpe=float(thresholds.get("min_sharpe", 1.0)),
         min_win_rate=float(thresholds.get("min_win_rate", 0.45)),
         max_drawdown_pct=float(thresholds.get("max_drawdown_pct", 0.25)),
         min_profit_factor=float(thresholds.get("min_profit_factor", 1.20)),
         auto_adjust_enabled=bool(auto_adj.get("enabled", True)),
-        evaluation_window_trades=int(auto_adj.get("evaluation_window_trades", 50)),
+        evaluation_window_trades=int(auto_adj.get("evaluation_window_trades", 0)),
+        min_trades_per_day=int(trade_volume_raw.get("min_trades_per_day", 50)),
         stabs_enabled=bool(stabs_raw.get("enabled", True)),
         stabs_window_trades=int(stabs_raw.get("window_trades", 10)),
         stabs_min_win_rate=float(stabs_raw.get("min_win_rate", 0.35)),
         stabs_max_drawdown_pct=float(stabs_raw.get("max_drawdown_pct", 0.12)),
         stabs_pierce_sharpe_threshold=float(stabs_raw.get("pierce_sharpe_threshold", 0.5)),
+    )
+
+    # ── Cache (Redis) ─────────────────────────────────────────
+    _cache_ttl_raw = cache_raw.get("default_ttl_seconds", 3600)
+    cache = CacheConfig(
+        enabled=bool(cache_raw.get("enabled", True)),
+        redis_url=os.environ.get("REDIS_URL", cache_raw.get("redis_url", "")),
+        default_ttl_seconds=int(_cache_ttl_raw) if _cache_ttl_raw is not None else 3600,
+        namespace=cache_raw.get("namespace", "qt"),
     )
 
     # ── System ────────────────────────────────────────────────
@@ -498,6 +532,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
 
     return AppConfig(
         system=system,
+        cache=cache,
         trading=trading,
         data=data,
         ml=ml,

@@ -109,6 +109,7 @@ class TestGeminiShortMessage:
 
 # ── ML models tests ──────────────────────────────────────────────────────────
 
+@pytest.mark.slow
 class TestQuantumEnsembleLinear:
     def test_linear_model_trained(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TRADING_MODE", "test")
@@ -146,8 +147,8 @@ class TestQuantumEnsembleLinear:
         assert "linear" in result.get("model_signals", {})
 
 
+@pytest.mark.slow
 class TestExtraTreesClassifier:
-    """Verify ExtraTreesClassifier trains, predicts, and persists correctly."""
 
     def test_tree_clf_trained_in_scores(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TRADING_MODE", "test")
@@ -246,6 +247,7 @@ class TestExtraTreesClassifier:
         assert ensemble.tree_clf.max_depth == cfg.ml.extra_trees_max_depth
 
 
+@pytest.mark.slow
 class TestPerTimeframeEpochTraining:
     def test_train_timeframe(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TRADING_MODE", "test")

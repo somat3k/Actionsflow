@@ -53,11 +53,12 @@ class TestIndexMarketsConfig:
         assert m2.yf_ticker == "GOOGL"
 
 
-class TestExtendedTrainingLookback:
-    def test_training_lookback_increased(self):
+class TestLimitedHistorySupport:
+    def test_training_lookback_allows_limited_history(self):
         cfg = load_config()
-        assert cfg.data.training_lookback_candles >= 5000, (
-            f"Expected training_lookback_candles >= 5000, got {cfg.data.training_lookback_candles}"
+        assert cfg.data.training_lookback_candles >= 300, (
+            "Expected training_lookback_candles >= 300, "
+            f"got {cfg.data.training_lookback_candles}"
         )
 
     def test_historical_csv_dir_configured(self):

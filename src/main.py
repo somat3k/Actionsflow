@@ -51,7 +51,23 @@ log = get_logger(__name__)
 
 def _build_db_manager(cfg) -> DatabaseManager:
     db_path = Path(cfg.system.state_dir) / cfg.system.database_file
-    return DatabaseManager(db_path)
+    cache_cfg = getattr(cfg, "cache", None)
+    cache_enabled: bool = True
+    redis_url: Optional[str] = None
+    cache_ttl: Optional[int] = 3600
+    namespace: str = "qt"
+    if cache_cfg is not None:
+        cache_enabled = bool(cache_cfg.enabled)
+        namespace = cache_cfg.namespace or "qt"
+        redis_url = cache_cfg.redis_url or None
+        cache_ttl = cache_cfg.default_ttl_seconds if cache_cfg.default_ttl_seconds > 0 else None
+    return DatabaseManager(
+        db_path,
+        redis_url=redis_url,
+        cache_ttl=cache_ttl,
+        cache_enabled=cache_enabled,
+        namespace=namespace,
+    )
 
 
 def _print_github_summary(text: str) -> None:
@@ -1415,12 +1431,113 @@ def run_model_export(config_path: Optional[Path] = None) -> int:
     return 0
 
 
+def run_health_check(cfg_path: Optional[Path] = None) -> int:
+    """Check connectivity and realtime inference for all AI providers and ML models.
+
+    Sends a probe request to each configured AI provider and verifies
+    that each loaded ML model can run inference on synthetic data.  Prints
+    a structured Markdown report and writes a GitHub Actions step summary
+    when running in CI.
+
+    Returns 0 regardless of individual probe failures so the check can be
+    used as a non-blocking diagnostic in any workflow stage.
+    """
+    cfg = load_config(cfg_path)
+    log.info("=== AI / ML Health Check ===")
+
+    # ── AI Provider Check ─────────────────────────────────────────────────────
+    ai_orchestrator = MultiAIOrchestrator(cfg)
+    ai_results = ai_orchestrator.health_check()
+
+    # ── ML Model Check ────────────────────────────────────────────────────────
+    # Lazy import avoids loading TensorFlow / heavy dependencies unnecessarily.
+    from src.ml_models import QuantumEnsemble  # noqa: PLC0415
+
+    enabled_markets = [m for m in cfg.trading.markets if m.enabled]
+    ml_results: Dict[str, List[Dict[str, Any]]] = {}
+    for market in enabled_markets:
+        ensemble = QuantumEnsemble(cfg)
+        if ensemble.load(market.symbol):
+            ml_results[market.symbol] = ensemble.health_check()
+        else:
+            ml_results[market.symbol] = [{
+                "model": "ensemble",
+                "status": "not_loaded",
+                "latency_ms": None,
+                "signal": None,
+                "error": "no saved models found",
+            }]
+
+    # ── Build Report ──────────────────────────────────────────────────────────
+    ts = utc_now().strftime("%Y-%m-%d %H:%M UTC")
+    lines: List[str] = [f"## 🏥 Health Check – {ts}\n"]
+
+    lines.append("### AI Providers\n")
+    lines.append("| Provider | Status | Latency | Notes |")
+    lines.append("|---|---|---|---|")
+    _status_icon = {"ok": "✅", "error": "❌", "skipped": "⏭️"}
+    for r in ai_results:
+        icon = _status_icon.get(r["status"], "❓")
+        latency = f"{r['latency_ms']:.0f}ms" if r.get("latency_ms") is not None else "—"
+        lines.append(
+            f"| {r['provider']} | {icon} {r['status']} | {latency} | {r.get('error', '')} |"
+        )
+    lines.append("")
+
+    # ── Orchestration Probe ────────────────────────────────────────────────────
+    log.info("=== Orchestration Probe ===")
+    probe_results = ai_orchestrator.orchestration_probe()
+
+    lines.append("### Orchestration Pipeline Probe\n")
+    lines.append(
+        "_Simulates the full live-trading sequence: "
+        "market context → leverage → performance review_\n"
+    )
+    lines.append("| Provider | Step | Status | Latency | Notes |")
+    lines.append("|---|---|---|---|---|")
+    for r in probe_results:
+        icon = _status_icon.get(r["status"], "❓")
+        latency = f"{r['latency_ms']:.0f}ms" if r.get("latency_ms") is not None else "—"
+        step_label = {
+            "market_context": "1. Market Context",
+            "leverage": "2. Leverage",
+            "performance": "3. Performance",
+        }.get(r.get("step", ""), r.get("step", ""))
+        lines.append(
+            f"| {r['provider']} | {step_label} | {icon} {r['status']} "
+            f"| {latency} | {r.get('error', '')} |"
+        )
+    lines.append("")
+
+    lines.append("### ML Models\n")
+    _ml_status_icon = {"ok": "✅", "error": "❌", "not_loaded": "⬜"}
+    _signal_labels = {0: "FLAT", 1: "LONG", 2: "SHORT"}
+    for symbol, results in ml_results.items():
+        lines.append(f"**{symbol}**\n")
+        lines.append("| Model | Status | Latency | Signal | Notes |")
+        lines.append("|---|---|---|---|---|")
+        for r in results:
+            icon = _ml_status_icon.get(r["status"], "❓")
+            latency = f"{r['latency_ms']:.2f}ms" if r.get("latency_ms") is not None else "—"
+            sig = _signal_labels.get(r.get("signal"), "—")  # type: ignore[arg-type]
+            lines.append(
+                f"| {r['model']} | {icon} {r['status']} | {latency} | {sig} | {r.get('error', '')} |"
+            )
+        lines.append("")
+
+    summary = "\n".join(lines)
+    print(summary)
+    _print_github_summary(summary)
+    log.info("Health check complete")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Quantum Trading System")
     parser.add_argument(
         "--run-type",
         choices=["training", "signal", "evaluate", "train-models", "infinity-train",
-                 "export-models", "full-cycle"],
+                 "export-models", "full-cycle", "health-check"],
         required=True,
         help="What to run",
     )
@@ -1458,6 +1575,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return run_model_export(cfg_path)
     elif args.run_type == "full-cycle":
         return run_full_cycle(cfg_path)
+    elif args.run_type == "health-check":
+        return run_health_check(cfg_path)
     else:
         log.error("Unknown run type: %s", args.run_type)
         return 1
