@@ -131,7 +131,7 @@ class GeminiConfig:
 @dataclass
 class GroqConfig:
     api_key: str = ""
-    model: str = "llama3-70b-8192"
+    model: str = "llama-3.3-70b-versatile"
     api_url: str = "https://api.groq.com/openai/v1/chat/completions"
     temperature: float = 0.1
     max_output_tokens: int = 2048
@@ -431,7 +431,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
 
     groq = GroqConfig(
         api_key=os.environ.get("GROQ_API_KEY", ""),
-        model=os.environ.get("GROQ_MODEL", groq_raw.get("model", "llama3-70b-8192")),
+        model=os.environ.get("GROQ_MODEL", groq_raw.get("model", "llama-3.3-70b-versatile")),
         api_url=os.environ.get(
             "GROQ_API_URL",
             groq_raw.get("api_url", "https://api.groq.com/openai/v1/chat/completions"),

@@ -85,9 +85,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: models/
-          key: ml-models-${{ github.ref_name }}
+          key: ml-models-${{ github.ref_name }}-equity${{ matrix.account_size }}-${{ github.run_id }}
           restore-keys: |
-            ml-models-
+            ml-models-${{ github.ref_name }}-equity${{ matrix.account_size }}-
+            ml-models-${{ github.ref_name }}-
 
       - name: Restore OHLCV CSV cache
         uses: actions/cache@v4
@@ -113,6 +114,13 @@ jobs:
         env:
           TRADING_MODE: paper
           LOG_LEVEL: INFO
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          HYPERLIQUID_SECRET: ${{ secrets.HYPERLIQUID_SECRET || secrets.HYPERLIQUID_PRIVATE_KEY }}
+          HYPERLIQUID_PRIVATE_KEY: ${{ secrets.HYPERLIQUID_PRIVATE_KEY || secrets.HYPERLIQUID_SECRET }}
+          HYPERLIQUID_ADDRESS: ${{ secrets.HYPERLIQUID_ADDRESS || secrets.HYPERLIQUID_WALLET_ADDRESS }}
+          HYPERLIQUID_WALLET_ADDRESS: ${{ secrets.HYPERLIQUID_WALLET_ADDRESS || secrets.HYPERLIQUID_ADDRESS }}
         run: |
           HOUR=$(date -u +%H)
           SESSION="unknown"
@@ -136,6 +144,9 @@ jobs:
         env:
           TRADING_MODE: paper
           LOG_LEVEL: INFO
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           echo "## 📊 Walk-Forward Validation – Account \$${{ matrix.account_size }}" >> "$GITHUB_STEP_SUMMARY"
           python -m src.main --run-type evaluate --mode paper
@@ -144,7 +155,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: models/
-          key: ml-models-${{ github.ref_name }}
+          key: ml-models-${{ github.ref_name }}-equity${{ matrix.account_size }}-${{ github.run_id }}
 
       - name: Upload training artifacts
         uses: actions/upload-artifact@v4
