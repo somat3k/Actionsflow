@@ -146,7 +146,8 @@ class GeminiOrchestrator:
                     # Restore primary API key on failure.
                     genai.configure(api_key=self.gcfg.api_key)
         else:
-            log.warning(
+            log_fn = log.info if self.cfg.trading.mode == "test" else log.warning
+            log_fn(
                 "Gemini unavailable (api_key=%s, library=%s) – using fallback heuristics",
                 bool(self.gcfg.api_key),
                 _GENAI_AVAILABLE,

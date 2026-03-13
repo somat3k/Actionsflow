@@ -207,6 +207,7 @@ class TestEvaluatorEvaluate:
 
     def test_high_trade_rate_no_volume_adjustment(self, evaluator):
         evaluator.eval_cfg.min_trades_per_day = 1
+        evaluator.eval_cfg.evaluation_window_trades = 25
         start = 1_700_000_000_000
         trades = [
             _make_trade(
