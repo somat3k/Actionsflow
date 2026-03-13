@@ -84,10 +84,10 @@ jobs:
         id: model-cache
         uses: actions/cache@v4
         with:
-          path: models/equity_${{ matrix.account_size }}/
-          key: ml-models-equity${{ matrix.account_size }}-${{ github.ref_name }}
+          path: models/
+          key: ml-models-${{ github.ref_name }}
           restore-keys: |
-            ml-models-equity${{ matrix.account_size }}-
+            ml-models-
 
       - name: Restore OHLCV CSV cache
         uses: actions/cache@v4
@@ -99,7 +99,7 @@ jobs:
             ohlcv-csv-
 
       - name: Create directories
-        run: mkdir -p models/equity_${{ matrix.account_size }} results .trading_state datasets/csv
+        run: mkdir -p models results .trading_state datasets/csv
 
       - name: Set training environment
         run: |
@@ -108,7 +108,6 @@ jobs:
           echo "TRAINING_EPOCHS=${{ inputs.training_epochs || '3' }}" >> "$GITHUB_ENV"
           echo "FORCE_RETRAIN=${{ inputs.force_retrain || 'false' }}" >> "$GITHUB_ENV"
           echo "INITIAL_EQUITY=${{ matrix.account_size }}" >> "$GITHUB_ENV"
-          echo "MODEL_SAVE_DIR=models/equity_${{ matrix.account_size }}" >> "$GITHUB_ENV"
 
       - name: Run model training (multiplex 1m/5m/15m/1h/1d)
         env:
@@ -144,15 +143,15 @@ jobs:
       - name: Save trained models
         uses: actions/cache/save@v4
         with:
-          path: models/equity_${{ matrix.account_size }}/
-          key: ml-models-equity${{ matrix.account_size }}-${{ github.ref_name }}
+          path: models/
+          key: ml-models-${{ github.ref_name }}
 
       - name: Upload training artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ml-models-equity${{ matrix.account_size }}-${{ github.run_number }}
           path: |
-            models/equity_${{ matrix.account_size }}/
+            models/
             results/training_scores.json
           retention-days: 90
 
