@@ -111,7 +111,9 @@ class MLConfig:
     extra_trees_max_depth: int = 10
     # Neural-Network priority: when NN confidence exceeds this threshold the NN
     # signal overrides the weighted-ensemble result for fast decision making.
-    nn_override_threshold: float = 0.65
+    nn_override_threshold: float = field(
+        default_factory=lambda: float(os.getenv("ML_NN_OVERRIDE_THRESHOLD", "0.65"))
+    )
     # Infinity-loop supervised learning
     infinity_loop_enabled: bool = True
     infinity_loop_max_epochs: int = 0         # 0 = infinite
