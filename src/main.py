@@ -1506,7 +1506,8 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
 
     def _sanitize_error(error: str) -> str:
         cleaned = error.replace("\n", " ").strip()
-        for char in ("\\", "`", "*", "_", "[", "]", "(", ")", "#", "+", "-", "!", "|", "<", ">"):
+        cleaned = cleaned.replace("\\", "\\\\")
+        for char in ("`", "*", "_", "[", "]", "(", ")", "#", "+", "-", "!", "|", "<", ">"):
             cleaned = cleaned.replace(char, f"\\{char}")
         return cleaned
 
