@@ -193,8 +193,7 @@ data:
 ml:
   # Ensemble of models
   # Neural Network (lstm) is the primary decision model with the highest weight.
-  # When its confidence exceeds nn_override_threshold it overrides the ensemble.
-  nn_override_threshold: 0.8    # Confidence above which LSTM overrides the ensemble
+  # When its confidence exceeds ml.signals.nn_override_threshold it overrides the ensemble.
   models:
     lstm:
       enabled: true

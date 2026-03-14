@@ -430,10 +430,10 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             "1", "true", "yes", "y", "on",
         }
     ml = MLConfig(
-        long_threshold=float(signals.get("long_threshold", 0.60)),
-        short_threshold=float(signals.get("short_threshold", 0.60)),
+        long_threshold=float(signals.get("long_threshold", 0.55)),
+        short_threshold=float(signals.get("short_threshold", 0.55)),
         close_threshold=float(signals.get("close_threshold", 0.45)),
-        min_ensemble_agreement=float(signals.get("min_ensemble_agreement", 0.60)),
+        min_ensemble_agreement=float(signals.get("min_ensemble_agreement", 0.50)),
         model_save_dir=os.environ.get("MODEL_SAVE_DIR", training.get("model_save_dir", "models")),
         retrain_interval_hours=int(training.get("retrain_interval_hours", 24)),
         training_epochs=int(os.environ.get("TRAINING_EPOCHS", training.get("epochs", 200))),
@@ -448,7 +448,10 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             models_raw.get("extra_trees", {}).get("max_depth", 10)
         ),
         nn_override_threshold=float(
-            signals.get("nn_override_threshold", 0.65)
+            os.environ.get(
+                "ML_NN_OVERRIDE_THRESHOLD",
+                signals.get("nn_override_threshold", 0.60),
+            )
         ),
         nn_priority_symbols=nn_priority_symbols,
         infinity_loop_enabled=bool(infinity_raw.get("enabled", True)),
