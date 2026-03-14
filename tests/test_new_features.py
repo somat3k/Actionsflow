@@ -86,7 +86,8 @@ class TestConfigInfinityLoopSymbols:
         cfg = load_config()
         assert "ETH" in cfg.ml.infinity_training_symbols
 
-    def test_infinity_force_refresh_enabled(self):
+    def test_infinity_force_refresh_enabled(self, monkeypatch):
+        monkeypatch.setenv("INFINITY_FORCE_REFRESH", "true")
         cfg = load_config()
         assert cfg.ml.infinity_force_refresh is True
 
