@@ -201,13 +201,24 @@ def _parse_bool_env(key: str, default: bool = False) -> bool:
 def _resolve_training_epochs(cfg: AppConfig, *, max_epochs: int = 10) -> int:
     epochs = max(1, cfg.ml.training_epochs)
     max_env = os.environ.get("MAX_TRAINING_EPOCHS")
+    cap_source = "default"
     if max_env:
         try:
             max_epochs = max(1, int(max_env))
+            cap_source = "MAX_TRAINING_EPOCHS"
         except ValueError:
-            log.warning("Invalid MAX_TRAINING_EPOCHS=%s; using %d", max_env, max_epochs)
+            log.warning(
+                "Invalid MAX_TRAINING_EPOCHS=%s; using default cap %d",
+                max_env,
+                max_epochs,
+            )
     if epochs > max_epochs:
-        log.info("Capping training epochs from %d to %d", epochs, max_epochs)
+        log.info(
+            "Capping training epochs from %d to %d (cap source: %s)",
+            epochs,
+            max_epochs,
+            cap_source,
+        )
         return max_epochs
     return epochs
 
