@@ -199,6 +199,12 @@ def _parse_bool_env(key: str, default: bool = False) -> bool:
 
 
 def _resolve_training_epochs(cfg: AppConfig, *, max_epochs: int = 10) -> int:
+    """Resolve training epochs with a configurable cap.
+
+    Uses the configured training epochs (min 1) and caps them to
+    MAX_TRAINING_EPOCHS (min 1; default cap 10). Logs whenever the cap applies
+    to keep long-running training runs from producing excessive output.
+    """
     epochs = max(1, cfg.ml.training_epochs)
     max_env = os.environ.get("MAX_TRAINING_EPOCHS")
     cap_source = "default"
