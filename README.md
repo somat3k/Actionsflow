@@ -79,6 +79,17 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 
 ---
 
+### Training Overrides (Environment Variables)
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRAINING_PROGRAM` | `multi_timeframe` | `multi_timeframe` (default), `progressive` (single-TF progression), or `single` (one-pass) training program |
+| `INFINITY_EXIT_ON_PASS` | `true` | Exit infinity training once evaluation thresholds pass |
+| `INFINITY_EVALUATION_INTERVAL` | (config) | Override `ml.infinity_loop.evaluation_interval_epochs` |
+| `INFINITY_PAYLOAD_PROBE` | `false` | Run a Groq payload inference probe at the start of infinity training |
+
+---
+
 ## Repository Secrets & Variables
 
 ### Required Secrets

@@ -171,6 +171,18 @@ def _resolve_training_markets(cfg: AppConfig) -> List[MarketConfig]:
     return [market for market in cfg.trading.markets if market.symbol.upper() in allowed]
 
 
+def _resolve_training_program() -> str:
+    """Resolve which training program to use (multi_timeframe|progressive|single)."""
+    raw = os.environ.get("TRAINING_PROGRAM", "").strip().lower()
+    if raw in {"mtf", "multi", "multi_timeframe", "multi-timeframe"}:
+        return "multi_timeframe"
+    if raw in {"progressive", "progression", "single_progression", "single-progression"}:
+        return "progressive"
+    if raw in {"single", "primary", "single_timeframe", "single-timeframe"}:
+        return "single"
+    return "multi_timeframe"
+
+
 def _build_multiplex_signal(
     cfg: AppConfig,
     ensemble: Any,
@@ -372,8 +384,9 @@ def _ensure_model_ready(
     needs_initial_train = not loaded
     should_train = is_scheduled_retrain_due or needs_initial_train
     if should_train:
+        training_program = _resolve_training_program()
         action = "Training" if needs_initial_train else "Retraining"
-        log.info("%s model for %s (multi-timeframe) …", action, symbol)
+        log.info("%s model for %s (%s) …", action, symbol, training_program)
 
         # Fetch data for all configured timeframes so the model benefits from
         # the same multi-timeframe context used in dedicated training runs.
@@ -409,13 +422,24 @@ def _ensure_model_ready(
         try:
             training_epochs = max(1, cfg.ml.training_epochs)
             reinforcement_alpha = cfg.ml.reinforcement_alpha
-            if training_epochs > 1 and len(tf_dataframes) > 1:
+            if (
+                training_program == "multi_timeframe"
+                and training_epochs > 1
+                and len(tf_dataframes) > 1
+            ):
                 ensemble.train_multi_timeframe_with_progression(
                     tf_dataframes,
                     symbol=symbol,
                     epochs=training_epochs,
                     reinforcement_alpha=reinforcement_alpha,
                     primary_tf=cfg.data.primary_interval,
+                )
+            elif training_program == "progressive" and training_epochs > 1:
+                ensemble.train_with_progression(
+                    primary_df,
+                    symbol=symbol,
+                    epochs=training_epochs,
+                    reinforcement_alpha=reinforcement_alpha,
                 )
             else:
                 ensemble.train(primary_df, symbol=symbol)
@@ -454,6 +478,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
 
     training_epochs = max(1, cfg.ml.training_epochs)
     reinforcement_alpha = cfg.ml.reinforcement_alpha
+    training_program = _resolve_training_program()
     force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
 
     enabled_markets = [
@@ -491,6 +516,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
         "=== TRAINING SESSION | %d epochs | %d crypto + %d index symbols ===",
         training_epochs, len(enabled_markets), len(index_dfs),
     )
+    log.info("Training program: %s", training_program)
 
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
@@ -587,7 +613,11 @@ def run_training(config_path: Optional[Path] = None) -> int:
             primary_df = next(iter(tf_dataframes.values()))
 
         # ── Train ─────────────────────────────────────────────────────────
-        if training_epochs > 1:
+        if (
+            training_program == "multi_timeframe"
+            and training_epochs > 1
+            and len(tf_dataframes) > 1
+        ):
             mtf_results = ensemble.train_multi_timeframe_with_progression(
                 tf_dataframes,
                 symbol=symbol,
@@ -599,6 +629,17 @@ def run_training(config_path: Optional[Path] = None) -> int:
                 continue
             epoch_scores[symbol] = mtf_results
             results[symbol] = mtf_results[-1]["combined_scores"]
+        elif training_program == "progressive" and training_epochs > 1:
+            prog_results = ensemble.train_with_progression(
+                primary_df,
+                symbol=symbol,
+                epochs=training_epochs,
+                reinforcement_alpha=reinforcement_alpha,
+            )
+            if not prog_results:
+                continue
+            epoch_scores[symbol] = prog_results
+            results[symbol] = prog_results[-1]["scores"]
         else:
             scores = ensemble.train(primary_df, symbol=symbol)
             results[symbol] = scores
@@ -612,6 +653,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
     summary = (
         "## 🤖 Model Training Results\n\n"
         f"**Epochs:** {training_epochs} | "
+        f"**Program:** {training_program} | "
         f"**Timeframes:** {', '.join(all_timeframes)}\n\n"
         "| Symbol | NN (primary) | XGB | GB | RF | Linear |\n"
         "|---|---|---|---|---|---|\n"
@@ -684,11 +726,33 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
         except ValueError:
             pass
 
+    eval_interval_env = os.environ.get("INFINITY_EVALUATION_INTERVAL")
+    if eval_interval_env:
+        try:
+            cfg.ml.infinity_evaluation_interval = int(eval_interval_env)
+        except ValueError:
+            log.warning("Invalid INFINITY_EVALUATION_INTERVAL=%s; using config value", eval_interval_env)
+
+    exit_on_pass_env = os.environ.get("INFINITY_EXIT_ON_PASS")
+    if exit_on_pass_env is None:
+        exit_on_pass = True
+    else:
+        exit_on_pass = str(exit_on_pass_env).strip().lower() in {"1", "true", "yes", "y"}
+    if exit_on_pass and cfg.ml.infinity_evaluation_interval > 1:
+        log.info(
+            "Exit-on-pass enabled; forcing infinity_evaluation_interval=1 for early exit"
+        )
+        cfg.ml.infinity_evaluation_interval = 1
+
     max_epochs = cfg.ml.infinity_loop_max_epochs  # 0 = infinite
     training_epochs = max(1, cfg.ml.training_epochs)
     reinforcement_alpha = cfg.ml.reinforcement_alpha
+    training_program = _resolve_training_program()
     force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
     should_refresh_dataset = force_retrain or cfg.ml.infinity_force_refresh
+    payload_probe = os.environ.get("INFINITY_PAYLOAD_PROBE", "").strip().lower() in {
+        "1", "true", "yes", "y"
+    }
     infinity_symbols_env = os.environ.get("INFINITY_TRAINING_SYMBOLS")
     if infinity_symbols_env and infinity_symbols_env.strip():
         allowed = {sym.upper() for sym in cfg.ml.infinity_training_symbols}
@@ -737,11 +801,27 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
         max_epochs or "∞",
         len(enabled_markets),
     )
+    log.info("Infinity training program: %s", training_program)
+
+    if payload_probe:
+        try:
+            probe_results = ai_orchestrator.orchestration_probe()
+            db.set_cache("infinity_loop:payload_probe", probe_results)
+            groq_results = [r for r in probe_results if r.get("provider") == "Groq"]
+            if groq_results:
+                _print_github_summary(
+                    "## 🧪 Groq Payload Probe\n\n"
+                    f"- Results: {len(groq_results)} response(s) recorded\n"
+                )
+        except Exception as exc:
+            log.warning("Groq payload probe failed: %s", exc)
 
     global_epoch = 0
+    exit_reason = "stopped"
     while True:
         if max_epochs > 0 and global_epoch >= max_epochs:
             log.info("Infinity loop reached max_epochs=%d. Stopping.", max_epochs)
+            exit_reason = "max_epochs"
             break
 
         global_epoch += 1
@@ -789,13 +869,27 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
             if not tf_dataframes:
                 continue
             try:
-                if training_epochs > 1:
+                if (
+                    training_program == "multi_timeframe"
+                    and training_epochs > 1
+                    and len(tf_dataframes) > 1
+                ):
                     ensemble.train_multi_timeframe_with_progression(
                         tf_dataframes,
                         symbol=symbol,
                         epochs=training_epochs,
                         reinforcement_alpha=reinforcement_alpha,
                         primary_tf=cfg.data.primary_interval,
+                    )
+                elif training_program == "progressive" and training_epochs > 1:
+                    primary_df = tf_dataframes.get(cfg.data.primary_interval) or next(
+                        iter(tf_dataframes.values())
+                    )
+                    ensemble.train_with_progression(
+                        primary_df,
+                        symbol=symbol,
+                        epochs=training_epochs,
+                        reinforcement_alpha=reinforcement_alpha,
                     )
                 else:
                     primary_df = tf_dataframes.get(cfg.data.primary_interval) or next(
@@ -809,7 +903,10 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
             _record_training_time(db, trained_symbols)
 
         # ── Periodic evaluation & hyperparameter adjustment ───────────────
-        if supervised.should_evaluate():
+        should_eval = supervised.should_evaluate()
+        if exit_on_pass and supervised.epoch == 1:
+            should_eval = True
+        if should_eval:
             trade_history = [asdict(t) for t in broker.trade_history]
             last_cycle = db.get_cache("signal:paper:last_cycle")
             cached_gemini_time = 0.0
@@ -844,6 +941,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 metrics_dict,
                 ai_callback=_ai_callback,
             )
+            passes = evaluator.passes_thresholds(metrics)
 
             # Log stab/pierce alerts
             if metrics.stab_alert or metrics.pierce_alert:
@@ -869,6 +967,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                     "stab_alert": metrics.stab_alert,
                     "pierce_alert": metrics.pierce_alert,
                     "adjustments": len(adjustments),
+                    "pass": passes,
                 },
             )
             _print_github_summary(
@@ -878,15 +977,23 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 f"WR: {fmt_pct(metrics.win_rate)}\n"
                 f"- Adjustments: {len(adjustments)}\n"
                 f"- Stab: {'⚠️' if metrics.stab_alert else '✅'} | "
-                f"Pierce: {'⚠️' if metrics.pierce_alert else '✅'}\n"
+                f"Pierce: {'⚠️' if metrics.pierce_alert else '✅'} | "
+                f"Thresholds: {'✅' if passes else '❌'}\n"
             )
+            if exit_on_pass and passes:
+                log.info(
+                    "Infinity loop thresholds satisfied (epoch=%d). Exiting loop.",
+                    global_epoch,
+                )
+                exit_reason = "thresholds_passed"
+                break
 
     db.record_task_completion(
         task_name="infinity_training",
         run_type="infinity-train",
         mode=cfg.trading.mode,
         status="success",
-        metadata={"final_epoch": global_epoch},
+        metadata={"final_epoch": global_epoch, "exit_reason": exit_reason},
     )
     return 0
 
