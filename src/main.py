@@ -678,7 +678,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
     training_epochs = max(1, cfg.ml.training_epochs)
     reinforcement_alpha = cfg.ml.reinforcement_alpha
     force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
-    force_dataset_refresh = force_retrain or cfg.ml.infinity_force_refresh
+    should_refresh_dataset = force_retrain or cfg.ml.infinity_force_refresh
     infinity_symbols_env = os.environ.get("INFINITY_TRAINING_SYMBOLS")
     if infinity_symbols_env and infinity_symbols_env.strip():
         allowed = {sym.upper() for sym in cfg.ml.infinity_training_symbols}
@@ -772,7 +772,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 df_tf = dataset_mgr.get_or_fetch_dataset(
                     fetcher, symbol, tf,
                     lookback_candles=cfg.data.training_lookback_candles,
-                    force_refresh=force_dataset_refresh,
+                    force_refresh=should_refresh_dataset,
                 )
                 if not df_tf.empty:
                     tf_dataframes[tf] = df_tf

@@ -209,7 +209,7 @@ def test_full_cycle_sequences_steps(monkeypatch, tmp_path):
 
     cfg = load_config()
     db_path = tmp_path / cfg.system.state_dir / cfg.system.database_file
-    monkeypatch.setattr("src.main._build_db_manager", lambda _cfg: DatabaseManager(db_path))
+    monkeypatch.setattr("src.main._build_db_manager", lambda _: DatabaseManager(db_path))
     monkeypatch.setattr("src.main.run_training", _record("training"))
     monkeypatch.setattr("src.main.run_paper_signal", _record("signal"))
     monkeypatch.setattr("src.main.run_evaluation", _record("evaluate"))
