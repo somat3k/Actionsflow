@@ -183,6 +183,13 @@ def _resolve_training_program() -> str:
     return "multi_timeframe"
 
 
+def _parse_bool_env(key: str, default: bool = False) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _build_multiplex_signal(
     cfg: AppConfig,
     ensemble: Any,
@@ -479,7 +486,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
     training_epochs = max(1, cfg.ml.training_epochs)
     reinforcement_alpha = cfg.ml.reinforcement_alpha
     training_program = _resolve_training_program()
-    force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
+    force_retrain = _parse_bool_env("FORCE_RETRAIN")
 
     enabled_markets = [
         m for m in _resolve_training_markets(cfg) if m.enabled
@@ -733,22 +740,17 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
         except ValueError:
             log.warning("Invalid INFINITY_EVALUATION_INTERVAL=%s; using config value", eval_interval_env)
 
-    exit_on_pass_env = os.environ.get("INFINITY_EXIT_ON_PASS")
-    if exit_on_pass_env is None:
-        # Default to exit-on-pass to stop infinity training once success criteria are met.
-        exit_on_pass = True
-    else:
-        exit_on_pass = exit_on_pass_env.strip().lower() in {"1", "true", "yes", "y"}
+    exit_on_pass = _parse_bool_env("INFINITY_EXIT_ON_PASS", default=True)
+    if os.environ.get("INFINITY_EXIT_ON_PASS") is None:
+        log.info("INFINITY_EXIT_ON_PASS not set; defaulting to true")
 
     max_epochs = cfg.ml.infinity_loop_max_epochs  # 0 = infinite
     training_epochs = max(1, cfg.ml.training_epochs)
     reinforcement_alpha = cfg.ml.reinforcement_alpha
     training_program = _resolve_training_program()
-    force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
+    force_retrain = _parse_bool_env("FORCE_RETRAIN")
     should_refresh_dataset = force_retrain or cfg.ml.infinity_force_refresh
-    payload_probe = os.environ.get("INFINITY_PAYLOAD_PROBE", "").strip().lower() in {
-        "1", "true", "yes", "y"
-    }
+    payload_probe = _parse_bool_env("INFINITY_PAYLOAD_PROBE")
     infinity_symbols_env = os.environ.get("INFINITY_TRAINING_SYMBOLS")
     if infinity_symbols_env and infinity_symbols_env.strip():
         allowed = {sym.upper() for sym in cfg.ml.infinity_training_symbols}
@@ -901,6 +903,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
         # ── Periodic evaluation & hyperparameter adjustment ───────────────
         # Force an evaluation after the first epoch when exit-on-pass is enabled
         # so training can exit immediately if initial results satisfy thresholds.
+        # The epoch==1 check is the early-exit optimization when thresholds are met.
         should_eval = supervised.should_evaluate() or (exit_on_pass and supervised.epoch == 1)
         if should_eval:
             trade_history = [asdict(t) for t in broker.trade_history]
