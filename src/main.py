@@ -176,6 +176,7 @@ def _build_multiplex_signal(
     delegation_agent: Any,
     snapshot: Dict[str, Any],
     prior_regime: str = "unknown",
+    symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generate a multi-timeframe ML signal from snapshot candles.
 
@@ -197,6 +198,7 @@ def _build_multiplex_signal(
         delegation_agent:  ``ModelDelegationAgent`` fallback.
         snapshot:          Market data snapshot dict from ``fetch_all_market_data``.
         prior_regime:      Cached regime label from the previous cycle.
+        symbol:            Optional symbol for NN-priority overrides.
 
     Returns:
         Signal dict with at minimum ``signal``, ``confidence``, ``agreement``,
@@ -210,6 +212,15 @@ def _build_multiplex_signal(
     ]
     candles = snapshot.get("candles", {})
     tf_predictions: Dict[str, Any] = {}
+    nn_priority_symbols = {s.upper() for s in cfg.ml.nn_priority_symbols}
+    primary_df = candles.get(cfg.data.primary_interval)
+    nn_priority_signal: Optional[Dict[str, Any]] = None
+    if symbol and symbol.upper() in nn_priority_symbols:
+        if primary_df is not None and not primary_df.empty:
+            try:
+                nn_priority_signal = ensemble.predict(primary_df)
+            except Exception as exc:
+                log.debug("NN priority prediction skipped for %s: %s", symbol, exc)
 
     for tf in trading_tfs:
         df_tf = candles.get(tf)
@@ -233,11 +244,16 @@ def _build_multiplex_signal(
         if ml_signal.get("agreement", 1.0) < cfg.ml.min_ensemble_agreement:
             ml_signal["signal"] = 0
             ml_signal["confidence"] = ml_signal.get("flat_prob", 1.0)
+        if nn_priority_signal and nn_priority_signal.get("nn_decision"):
+            nn_priority_signal["delegated_to"] = "nn_override"
+            return nn_priority_signal
         ml_signal["delegated_to"] = "multiplex"
         return ml_signal
 
     # Fewer than two timeframes – fall back to delegation agent.
-    primary_df = candles.get(cfg.data.primary_interval)
+    if nn_priority_signal and nn_priority_signal.get("nn_decision"):
+        nn_priority_signal["delegated_to"] = "nn_override"
+        return nn_priority_signal
     if primary_df is not None and not primary_df.empty:
         return delegation_agent.predict(primary_df, regime=prior_regime)
     for df_tf in candles.values():
@@ -654,8 +670,26 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
     training_epochs = max(1, cfg.ml.training_epochs)
     reinforcement_alpha = cfg.ml.reinforcement_alpha
     force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
-
-    enabled_markets = [m for m in _resolve_training_markets(cfg) if m.enabled]
+    force_refresh = force_retrain or cfg.ml.infinity_force_refresh
+    infinity_override_env = os.environ.get("INFINITY_TRAINING_SYMBOLS")
+    if infinity_override_env and infinity_override_env.strip():
+        allowed = {sym.upper() for sym in cfg.ml.infinity_training_symbols}
+        if allowed:
+            enabled_markets = [
+                m for m in cfg.trading.markets if m.enabled and m.symbol.upper() in allowed
+            ]
+        else:
+            log.warning("INFINITY_TRAINING_SYMBOLS set but empty after parsing; using defaults")
+            enabled_markets = [m for m in _resolve_training_markets(cfg) if m.enabled]
+    elif os.environ.get("TRAINING_SYMBOLS"):
+        enabled_markets = [m for m in _resolve_training_markets(cfg) if m.enabled]
+    elif cfg.ml.infinity_training_symbols:
+        allowed = {sym.upper() for sym in cfg.ml.infinity_training_symbols}
+        enabled_markets = [
+            m for m in cfg.trading.markets if m.enabled and m.symbol.upper() in allowed
+        ]
+    else:
+        enabled_markets = [m for m in _resolve_training_markets(cfg) if m.enabled]
     index_fetcher = IndexDataFetcher(cfg)
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
@@ -722,6 +756,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 log.warning("Index training failed for %s: %s", idx_sym, exc)
 
         # ── Train crypto models ───────────────────────────────────────────
+        trained_symbols: List[str] = []
         for market in enabled_markets:
             symbol = market.symbol
             tf_dataframes: Dict[str, Any] = {}
@@ -729,7 +764,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 df_tf = dataset_mgr.get_or_fetch_dataset(
                     fetcher, symbol, tf,
                     lookback_candles=cfg.data.training_lookback_candles,
-                    force_refresh=force_retrain,
+                    force_refresh=force_refresh,
                 )
                 if not df_tf.empty:
                     tf_dataframes[tf] = df_tf
@@ -749,8 +784,11 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                         iter(tf_dataframes.values())
                     )
                     ensemble.train(primary_df, symbol=symbol)
+                trained_symbols.append(symbol)
             except Exception as exc:
                 log.warning("Training failed for %s: %s", symbol, exc)
+        if trained_symbols:
+            _record_training_time(db, trained_symbols)
 
         # ── Periodic evaluation & hyperparameter adjustment ───────────────
         if supervised.should_evaluate():
@@ -897,7 +935,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         # available (e.g. first run, stub data, or missing intervals).
         prior_regime = cached_regimes.get(symbol, "unknown")
         ml_signal = _build_multiplex_signal(
-            cfg, ensemble, delegation_agent, snapshot, prior_regime
+            cfg, ensemble, delegation_agent, snapshot, prior_regime, symbol=symbol
         )
         log.info(
             "%s ML signal: %s (conf=%.3f, agree=%.2f, nn_primary=%s, delegated_to=%s)",
@@ -1126,7 +1164,7 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
         prior_regime = cached_regimes.get(symbol, "unknown")
         # Multi-timeframe signal: combines 1m / 5m / 15m / 1h predictions.
         ml_signal = _build_multiplex_signal(
-            cfg, ensemble, delegation_agent, snapshot, prior_regime
+            cfg, ensemble, delegation_agent, snapshot, prior_regime, symbol=symbol
         )
         gemini_analysis = ai_orchestrator.analyse_market_context(symbol, ml_signal, snapshot)
         validated_signal = gemini_analysis.get("validated_signal", ml_signal["signal"])

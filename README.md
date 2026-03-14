@@ -71,7 +71,10 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 | `ml.signals.long_threshold` | `0.60` | P(long) to enter |
 | `gemini.model` | `gemini-2.5-pro` | Gemini model for orchestration |
 | `openai.model` | `gpt-4o-mini` | OpenAI model for orchestration |
-| `groq.model` | `llama3-70b-8192` | Groq model for orchestration |
+| `groq.model` | `oss-120` | Groq model for orchestration |
+| `ml.signals.nn_priority_symbols` | `ETH` | Symbols that prioritize NN overrides in multiplex signals |
+| `ml.infinity_loop.training_symbols` | `ETH` | Default infinity-loop training symbols when TRAINING_SYMBOLS unset |
+| `ml.infinity_loop.force_refresh` | `true` | Refresh datasets every infinity-loop epoch for real-time training |
 | `openrouter.model` | `openai/gpt-4o-mini` | OpenRouter model for orchestration |
 
 ---

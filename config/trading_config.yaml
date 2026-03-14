@@ -150,8 +150,8 @@ trading:
     daily_loss_limit_pct: 0.05        # 5% daily loss limit
     max_open_positions: 8             # Match expanded symbol universe
     stop_loss_atr_multiplier: 2.0
-    take_profit_atr_multiplier: 3.0
-    trailing_stop_pct: 0.015          # 1.5% trailing stop
+    take_profit_atr_multiplier: 1.5   # Smaller profit targets for higher win rate
+    trailing_stop_pct: 0.01           # 1.0% trailing stop for faster profit capture
 
 # ── Data Fetching ────────────────────────────────────────────
 data:
@@ -297,6 +297,8 @@ ml:
     # Neural-Network priority: when NN max-class confidence >= this value
     # the NN signal overrides the weighted-ensemble result directly.
     nn_override_threshold: 0.65
+    # Symbols that should prioritize NN override signals in multiplex mode.
+    nn_priority_symbols: ["ETH"]
 
   # Training settings
   training:
@@ -316,6 +318,10 @@ ml:
     hp_adjust_step_threshold: 0.02    # Signal threshold step when adjusting for zero trades
     hp_adjust_agreement_step: 0.05    # Ensemble agreement step when adjusting for zero trades
     evaluation_interval_epochs: 10    # Re-evaluate after every N training epochs
+    # Focus infinity training on specific symbols (fallback if TRAINING_SYMBOLS unset)
+    training_symbols: ["ETH"]
+    # Always refresh datasets in infinity loop to keep training on real-time data.
+    force_refresh: true
 
 # ── Gemini AI Orchestrator ────────────────────────────────────
 gemini:
@@ -343,7 +349,7 @@ openai:
   timeout_seconds: 30
 
 groq:
-  model: "llama-3.3-70b-versatile"
+  model: "oss-120"
   temperature: 0.1
   max_output_tokens: 2048
   timeout_seconds: 15
