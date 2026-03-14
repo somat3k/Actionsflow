@@ -200,6 +200,12 @@ def _parse_bool_env(key: str, default: bool = False) -> bool:
 
 def _resolve_training_epochs(cfg: AppConfig, *, max_epochs: int = 10) -> int:
     epochs = max(1, cfg.ml.training_epochs)
+    max_env = os.environ.get("MAX_TRAINING_EPOCHS")
+    if max_env:
+        try:
+            max_epochs = max(1, int(max_env))
+        except ValueError:
+            log.warning("Invalid MAX_TRAINING_EPOCHS=%s; using %d", max_env, max_epochs)
     if epochs > max_epochs:
         log.info("Capping training epochs from %d to %d", epochs, max_epochs)
         return max_epochs
@@ -487,7 +493,8 @@ def run_training(config_path: Optional[Path] = None) -> int:
     - Fetches OHLCV data for all five timeframes (1m, 5m, 15m, 1h, 1d).
     - Also fetches index/equity data (GOOGL, AAPL, NVDA, US30, SPX, JPM,
       SPY, NASDAQ) via Yahoo Finance for cross-market training enrichment.
-    - Runs ``training_epochs`` (default 200, capped at 10) progressive epochs per symbol.
+    - Runs ``training_epochs`` (default 200, capped at MAX_TRAINING_EPOCHS=10)
+      progressive epochs per symbol.
     - Applies reinforcement-learning weight updates after each epoch.
     - Displays tqdm progress bars for the training session, each symbol,
       and each epoch's timeframe loop.
