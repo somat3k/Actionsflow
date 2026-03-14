@@ -993,8 +993,8 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 exit_reason = "thresholds_passed"
                 break
 
-    # Defensive fallback: should be unreachable with the current while True loop
-    # but keeps metadata safe if the control flow changes later.
+    # Fallback if exit_reason was not explicitly set; this shouldn't happen with
+    # the current break assignments but keeps metadata safe for future changes.
     if exit_reason is None:
         exit_reason = "interrupted"
     db.record_task_completion(
