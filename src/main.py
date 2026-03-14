@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import sys
 import time
@@ -1505,11 +1506,8 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
         log.info("Cleared DATA_SNAPSHOT_END_MS; using real-time data for pipeline")
 
     def _sanitize_error(error: str) -> str:
-        cleaned = error.replace("\\", "\\\\")
-        cleaned = cleaned.replace("\n", " ").strip()
-        for char in ("`", "*", "_", "[", "]", "(", ")", "#", "+", "-", "!", "|", "<", ">"):
-            cleaned = cleaned.replace(char, f"\\{char}")
-        return cleaned
+        cleaned = error.replace("\n", " ").strip()
+        return re.sub(r"([\\`*_\\[\\]()#+\\-!|<>])", r"\\\1", cleaned)
 
     def _record_stage(
         stage: str,
