@@ -1505,10 +1505,10 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
     if snapshot_override is not None:
         log.info("Cleared DATA_SNAPSHOT_END_MS; using real-time data for pipeline")
 
-    def _sanitize_error(error: str) -> str:
-        """Escape markdown special characters for summary output."""
+    def _escape_markdown_error(error: str) -> str:
+        """Remove newlines and escape markdown special characters for summary output."""
         cleaned = error.replace("\n", " ").strip()
-        return re.sub(r"([`*_\[\]()#+!|<>\-])", r"\\\1", cleaned)
+        return re.sub(r"([`*_\[\]()#+!|<>-])", r"\\\1", cleaned)
 
     def _record_stage(
         stage: str,
@@ -1525,7 +1525,7 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
             payload["exit_code"] = rc
         safe_error = ""
         if error:
-            safe_error = _sanitize_error(error)
+            safe_error = _escape_markdown_error(error)
             payload["error"] = safe_error
         db.set_cache("training_pipeline:progress", payload)
         summary = (
