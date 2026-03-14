@@ -92,13 +92,13 @@ class TestConfigInfinityLoopSymbols:
         assert cfg.ml.infinity_force_refresh is True
 
 
-# ── Gemini orchestrator tests ─────────────────────────────────────────────────
+# ── Agent orchestrator tests ──────────────────────────────────────────────────
 
-class TestGeminiShortMessage:
+class TestAgentShortMessage:
     def test_build_short_message_payload(self):
-        from src.gemini_orchestrator import GeminiOrchestrator
+        from src.agent_orchestrator import AgentOrchestrator
         cfg = load_config()
-        orch = GeminiOrchestrator(cfg)
+        orch = AgentOrchestrator(cfg)
         payload = orch.build_short_message_payload(
             "BTC", 1, 0.85, "trending_up", 20, 42000.0
         )
@@ -110,18 +110,18 @@ class TestGeminiShortMessage:
         assert "BTC LONG" in payload["message"]
 
     def test_short_message_flat_signal(self):
-        from src.gemini_orchestrator import GeminiOrchestrator
+        from src.agent_orchestrator import AgentOrchestrator
         cfg = load_config()
-        orch = GeminiOrchestrator(cfg)
+        orch = AgentOrchestrator(cfg)
         payload = orch.build_short_message_payload(
             "ETH", 0, 0.55, "ranging", 15, 3000.0
         )
         assert payload["signal"] == "FLAT"
 
     def test_avg_answer_time_initially_zero(self):
-        from src.gemini_orchestrator import GeminiOrchestrator
+        from src.agent_orchestrator import AgentOrchestrator
         cfg = load_config()
-        orch = GeminiOrchestrator(cfg)
+        orch = AgentOrchestrator(cfg)
         assert orch.avg_answer_time == 0.0
 
 
