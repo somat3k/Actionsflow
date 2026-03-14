@@ -241,7 +241,6 @@ def _build_multiplex_signal(
                 nn_priority_enabled
                 and tf == cfg.data.primary_interval
                 and not has_tf_model
-                and nn_priority_signal is None
             )
             if should_capture_nn_priority_signal:
                 nn_priority_signal = pred
@@ -1527,7 +1526,7 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
             safe_error = _sanitize_error(error)
             payload["error"] = safe_error
         db.set_cache("training_pipeline:progress", payload)
-        error_line = f"- Error: `{safe_error}`\n" if safe_error else ""
+        error_line = f"- Error: {safe_error}\n" if safe_error else ""
         _print_github_summary(
             f"### 🧪 Training Pipeline – {stage}\n\n"
             f"- Status: **{status.upper()}**\n"
