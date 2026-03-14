@@ -737,12 +737,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
     if exit_on_pass_env is None:
         exit_on_pass = True
     else:
-        exit_on_pass = str(exit_on_pass_env).strip().lower() in {"1", "true", "yes", "y"}
-    if exit_on_pass and cfg.ml.infinity_evaluation_interval > 1:
-        log.info(
-            "Exit-on-pass enabled; forcing infinity_evaluation_interval=1 for early exit"
-        )
-        cfg.ml.infinity_evaluation_interval = 1
+        exit_on_pass = exit_on_pass_env.strip().lower() in {"1", "true", "yes", "y"}
 
     max_epochs = cfg.ml.infinity_loop_max_epochs  # 0 = infinite
     training_epochs = max(1, cfg.ml.training_epochs)
@@ -903,9 +898,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
             _record_training_time(db, trained_symbols)
 
         # ── Periodic evaluation & hyperparameter adjustment ───────────────
-        should_eval = supervised.should_evaluate()
-        if exit_on_pass and supervised.epoch == 1:
-            should_eval = True
+        should_eval = supervised.should_evaluate() or (exit_on_pass and supervised.epoch == 1)
         if should_eval:
             trade_history = [asdict(t) for t in broker.trade_history]
             last_cycle = db.get_cache("signal:paper:last_cycle")
