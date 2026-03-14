@@ -71,8 +71,26 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 | `ml.signals.long_threshold` | `0.60` | P(long) to enter |
 | `gemini.model` | `gemini-2.5-pro` | Gemini model for orchestration |
 | `openai.model` | `gpt-4o-mini` | OpenAI model for orchestration |
-| `groq.model` | `llama3-70b-8192` | Groq model for orchestration |
+| `groq.model` | `oss-120` | Groq model for orchestration |
+| `ml.signals.nn_priority_symbols` | `ETH` | Symbols that prioritize NN overrides in multiplex signals |
+| `ml.infinity_loop.training_symbols` | `ETH` | Default infinity-loop training symbols when TRAINING_SYMBOLS unset |
+| `ml.infinity_loop.force_refresh` | `true` | Refresh datasets every infinity-loop epoch for real-time training |
 | `openrouter.model` | `openai/gpt-4o-mini` | OpenRouter model for orchestration |
+
+---
+
+### Training Overrides (Environment Variables)
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRAINING_PROGRAM` | `multi_timeframe` | `multi_timeframe` (default), `progressive` (single-TF progression), or `single` (one-pass) training program |
+| `MAX_TRAINING_EPOCHS` | `10` | Cap epochs per symbol to limit training output |
+| `INFINITY_EXIT_ON_PASS` | `true` | Exit infinity training once evaluation thresholds pass |
+| `INFINITY_EVALUATION_INTERVAL` | (config) | Override `ml.infinity_loop.evaluation_interval_epochs` |
+| `INFINITY_PAYLOAD_PROBE` | `false` | Run a Groq payload inference probe at the start of infinity training |
+
+By default, training epochs are capped at 10 per symbol (configurable via
+`MAX_TRAINING_EPOCHS`) to limit log volume and runtime during long runs.
 
 ---
 
@@ -177,6 +195,9 @@ python -m src.main --run-type evaluate --mode paper
 
 # Full pipeline run (training → signal → evaluate → export → eligibility → trading)
 python -m src.main --run-type full-cycle --mode paper
+
+# Staged training pipeline (training → evaluate → export, real-time data)
+python -m src.main --run-type training-pipeline --mode paper
 
 # Optional overrides
 # DATA_SNAPSHOT_END_MS=...            # Freeze data snapshot across the full cycle

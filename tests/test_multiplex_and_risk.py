@@ -241,6 +241,54 @@ class TestBuildMultiplexSignal:
         assert result["signal"] == 0, "Low consensus should force FLAT signal"
         assert result.get("delegated_to") == "multiplex"
 
+    def test_nn_priority_override_for_eth(self, cfg, tmp_path, monkeypatch):
+        """ETH should prioritise NN override signals even when multiplex says FLAT."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "models").mkdir()
+
+        from src.ml_models import QuantumEnsemble, ModelDelegationAgent
+        from src.main import _build_multiplex_signal
+
+        cfg.ml.nn_priority_symbols = ["ETH"]
+        ensemble = QuantumEnsemble(cfg)
+        df = _make_df()
+        ensemble.train(df, symbol="ETH")
+        delegation_agent = ModelDelegationAgent(ensemble)
+
+        snapshot = self._make_snapshot({"1m": True, "5m": True, "15m": False, "1h": False})
+
+        def _nn_signal():
+            return {
+                "signal": 1,
+                "confidence": 0.90,
+                "long_prob": 0.90,
+                "short_prob": 0.05,
+                "flat_prob": 0.05,
+                "agreement": 1.0,
+                "model_signals": {"lstm": 1},
+                "nn_decision": True,
+            }
+
+        with patch.object(ensemble, "predict", side_effect=lambda *_a, **_k: _nn_signal()):
+            with patch.object(
+                ensemble,
+                "combined_decision",
+                return_value={
+                    "signal": 0,
+                    "confidence": 0.10,
+                    "long_prob": 0.30,
+                    "short_prob": 0.20,
+                    "flat_prob": 0.50,
+                    "agreement": 0.50,
+                },
+            ):
+                result = _build_multiplex_signal(
+                    cfg, ensemble, delegation_agent, snapshot, symbol="ETH"
+                )
+
+        assert result["delegated_to"] == "nn_override"
+        assert result["nn_decision"] is True
+
     def test_per_tf_model_used_when_available(self, cfg, tmp_path, monkeypatch):
         """When has_timeframe_model returns True (train_timeframe was called),
         predict_timeframe should be called for that timeframe instead of the global predict."""
