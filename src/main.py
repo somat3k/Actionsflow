@@ -213,12 +213,12 @@ def _build_multiplex_signal(
     candles = snapshot.get("candles", {})
     tf_predictions: Dict[str, Any] = {}
     nn_priority_symbols = {s.upper() for s in cfg.ml.nn_priority_symbols}
-    primary_df = candles.get(cfg.data.primary_interval)
     nn_priority_signal: Optional[Dict[str, Any]] = None
     if symbol and symbol.upper() in nn_priority_symbols:
-        if primary_df is not None and not primary_df.empty:
+        nn_primary_df = candles.get(cfg.data.primary_interval)
+        if nn_primary_df is not None and not nn_primary_df.empty:
             try:
-                nn_priority_signal = ensemble.predict(primary_df)
+                nn_priority_signal = ensemble.predict(nn_primary_df)
             except Exception as exc:
                 log.debug("NN priority prediction skipped for %s: %s", symbol, exc)
 
@@ -254,6 +254,7 @@ def _build_multiplex_signal(
     if nn_priority_signal and nn_priority_signal.get("nn_decision"):
         nn_priority_signal["delegated_to"] = "nn_override"
         return nn_priority_signal
+    primary_df = candles.get(cfg.data.primary_interval)
     if primary_df is not None and not primary_df.empty:
         return delegation_agent.predict(primary_df, regime=prior_regime)
     for df_tf in candles.values():
@@ -671,8 +672,8 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
     reinforcement_alpha = cfg.ml.reinforcement_alpha
     force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
     force_refresh = force_retrain or cfg.ml.infinity_force_refresh
-    infinity_override_env = os.environ.get("INFINITY_TRAINING_SYMBOLS")
-    if infinity_override_env and infinity_override_env.strip():
+    infinity_symbols_env = os.environ.get("INFINITY_TRAINING_SYMBOLS")
+    if infinity_symbols_env and infinity_symbols_env.strip():
         allowed = {sym.upper() for sym in cfg.ml.infinity_training_symbols}
         if allowed:
             enabled_markets = [
