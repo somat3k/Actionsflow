@@ -54,7 +54,9 @@ _SYSTEM_PROMPT = textwrap.dedent("""
     5. Flag elevated risk conditions that should pause trading.
 
     Always respond with valid JSON matching the schema requested in each prompt.
-    Be concise, precise, and conservative – capital preservation is paramount.
+    Be concise and precise. Trust the ML signal – only override to FLAT when
+    there is strong and clear market evidence that contradicts it (e.g., extreme
+    funding rates, severe order-book imbalance, or abrupt trend reversal signals).
 """)
 
 
@@ -312,6 +314,12 @@ class GeminiOrchestrator:
             - Bid/Ask Spread (bps): {order_book.get('bid_ask_spread_bps', 0):.2f}
             - Trade Flow Imbalance: {snapshot.get('trade_flow_imbalance', 0):.4f}
 
+            Lean toward preserving the ML signal direction. Only set validated_signal
+            to 0 (FLAT) when the market data provides strong, clear evidence that
+            contradicts the ML signal (e.g., extreme funding rate > 0.1%, severe
+            order-book imbalance > 0.5, or clearly opposing trade flow). When uncertain,
+            keep the ML signal as-is.
+
             Respond with JSON only:
             {{
                 "validated_signal": <0|1|2>,
@@ -347,7 +355,7 @@ class GeminiOrchestrator:
 
             Rules: Higher confidence and better performance → higher leverage.
             Volatile or uncertain regimes → lower leverage.
-            Conservative bias – reduce leverage when in doubt.
+            Calibrate leverage to match market conditions and ML confidence.
 
             Respond with JSON only:
             {{

@@ -95,10 +95,10 @@ _DEFAULT_MODEL_WEIGHTS: Dict[str, float] = {
 
 @dataclass
 class MLConfig:
-    long_threshold: float = 0.60
-    short_threshold: float = 0.60
+    long_threshold: float = 0.55
+    short_threshold: float = 0.55
     close_threshold: float = 0.45
-    min_ensemble_agreement: float = 0.60
+    min_ensemble_agreement: float = 0.50
     model_save_dir: str = "models"
     retrain_interval_hours: int = 24
     training_epochs: int = 200
@@ -112,7 +112,7 @@ class MLConfig:
     # Neural-Network priority: when NN confidence exceeds this threshold the NN
     # signal overrides the weighted-ensemble result for fast decision making.
     nn_override_threshold: float = field(
-        default_factory=lambda: float(os.getenv("ML_NN_OVERRIDE_THRESHOLD", "0.65"))
+        default_factory=lambda: float(os.getenv("ML_NN_OVERRIDE_THRESHOLD", "0.60"))
     )
     nn_priority_symbols: List[str] = field(default_factory=list)
     # Infinity-loop supervised learning

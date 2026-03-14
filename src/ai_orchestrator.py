@@ -639,6 +639,12 @@ def _build_market_context_prompt(
         - Bid/Ask Spread (bps): {order_book.get('bid_ask_spread_bps', 0):.2f}
         - Trade Flow Imbalance: {snapshot.get('trade_flow_imbalance', 0):.4f}
 
+        Lean toward preserving the ML signal direction. Only set validated_signal
+        to 0 (FLAT) when the market data provides strong, clear evidence that
+        contradicts the ML signal (e.g., extreme funding rate > 0.1%, severe
+        order-book imbalance > 0.5, or clearly opposing trade flow). When uncertain,
+        keep the ML signal as-is.
+
         Respond with JSON only:
         {{
             "validated_signal": <0|1|2>,
@@ -675,7 +681,7 @@ def _build_leverage_prompt(
 
         Rules: Higher confidence and better performance → higher leverage.
         Volatile or uncertain regimes → lower leverage.
-        Conservative bias – reduce leverage when in doubt.
+        Calibrate leverage to match market conditions and ML confidence.
 
         Respond with JSON only:
         {{
