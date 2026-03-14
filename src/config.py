@@ -89,7 +89,7 @@ class DataConfig:
 
 
 _DEFAULT_MODEL_WEIGHTS: Dict[str, float] = {
-    "xgb": 0.25, "gb": 0.10, "rf": 0.15, "lstm": 0.20, "linear": 0.10, "tree_clf": 0.20,
+    "xgb": 0.20, "gb": 0.08, "rf": 0.12, "lstm": 0.35, "linear": 0.08, "tree_clf": 0.17,
 }
 
 
@@ -109,6 +109,11 @@ class MLConfig:
     # ExtraTrees (tree-classifier-decision-making-system) hyperparameters
     extra_trees_n_estimators: int = 200
     extra_trees_max_depth: int = 10
+    # Neural-Network priority: when NN confidence exceeds this threshold the NN
+    # signal overrides the weighted-ensemble result for fast decision making.
+    nn_override_threshold: float = field(
+        default_factory=lambda: float(os.getenv("ML_NN_OVERRIDE_THRESHOLD", "0.65"))
+    )
     # Infinity-loop supervised learning
     infinity_loop_enabled: bool = True
     infinity_loop_max_epochs: int = 0         # 0 = infinite
@@ -135,7 +140,7 @@ class GroqConfig:
     api_url: str = "https://api.groq.com/openai/v1/chat/completions"
     temperature: float = 0.1
     max_output_tokens: int = 2048
-    timeout_seconds: int = 30
+    timeout_seconds: int = 15
 
 
 @dataclass
@@ -377,7 +382,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     # Load per-model weights from YAML if present.
     models_raw = ml_raw.get("models", {})
     default_weights = {
-        "xgb": 0.25, "gb": 0.10, "rf": 0.15, "lstm": 0.20, "linear": 0.10, "tree_clf": 0.20,
+        "xgb": 0.20, "gb": 0.08, "rf": 0.12, "lstm": 0.35, "linear": 0.08, "tree_clf": 0.17,
     }
     yaml_name_map = {
         "xgboost": "xgb", "gradient_boost": "gb", "random_forest": "rf",
@@ -406,6 +411,9 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         ),
         extra_trees_max_depth=int(
             models_raw.get("extra_trees", {}).get("max_depth", 10)
+        ),
+        nn_override_threshold=float(
+            signals.get("nn_override_threshold", 0.65)
         ),
         infinity_loop_enabled=bool(infinity_raw.get("enabled", True)),
         infinity_loop_max_epochs=int(infinity_raw.get("max_epochs", 0)),

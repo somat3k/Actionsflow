@@ -66,12 +66,13 @@ class TestConfigDualGemini:
 class TestConfigModelWeights:
     def test_model_weights_loaded_from_yaml(self):
         cfg = load_config()
-        assert cfg.ml.model_weights["xgb"] == 0.25
-        assert cfg.ml.model_weights["gb"] == 0.10
-        assert cfg.ml.model_weights["rf"] == 0.15
-        assert cfg.ml.model_weights["lstm"] == 0.20
-        assert cfg.ml.model_weights["linear"] == 0.10
-        assert cfg.ml.model_weights["tree_clf"] == 0.20
+        # NN (lstm) is the primary model with the highest weight.
+        assert cfg.ml.model_weights["lstm"] == 0.35
+        assert cfg.ml.model_weights["xgb"] == 0.20
+        assert cfg.ml.model_weights["gb"] == 0.08
+        assert cfg.ml.model_weights["rf"] == 0.12
+        assert cfg.ml.model_weights["linear"] == 0.08
+        assert cfg.ml.model_weights["tree_clf"] == 0.17
 
 
 # ── Gemini orchestrator tests ─────────────────────────────────────────────────

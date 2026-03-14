@@ -825,6 +825,18 @@ class QuantumEnsemble:
 
     # ── Inference ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _proba_to_fls(proba: "np.ndarray") -> tuple:
+        """Extract (flat_prob, long_prob, short_prob) from a class-probability vector.
+
+        Handles vectors shorter than 3 classes gracefully.
+        """
+        n = proba.shape[0]
+        flat = float(proba[0]) if n > 0 else 1.0
+        long_ = float(proba[1]) if n > 1 else 0.0
+        short_ = float(proba[2]) if n > 2 else 0.0
+        return flat, long_, short_
+
     def predict(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
         Run ensemble inference on the latest candle data.
@@ -885,6 +897,7 @@ class QuantumEnsemble:
                 "flat_prob": 1.0,
                 "agreement": 0.0,
                 "model_signals": {},
+                "nn_decision": False,
             }
 
         # Weighted average of probabilities
@@ -900,12 +913,9 @@ class QuantumEnsemble:
 
         # Map class indices to probabilities
         # Classes 0=flat, 1=long, 2=short
-        n_classes = weighted_proba.shape[0]
-        flat_prob = float(weighted_proba[0]) if n_classes > 0 else 1.0
-        long_prob = float(weighted_proba[1]) if n_classes > 1 else 0.0
-        short_prob = float(weighted_proba[2]) if n_classes > 2 else 0.0
+        flat_prob, long_prob, short_prob = self._proba_to_fls(weighted_proba)
 
-        # Determine signal
+        # Determine signal from weighted ensemble
         max_prob = max(long_prob, short_prob, flat_prob)
         if max_prob == long_prob and long_prob >= self.cfg.ml.long_threshold:
             signal = 1
@@ -917,12 +927,45 @@ class QuantumEnsemble:
             signal = 0
             confidence = flat_prob
 
+        # ── Neural-Network priority override ──────────────────────────────
+        # When the NN model (key "lstm") is available and its most confident
+        # class probability exceeds `nn_override_threshold`, the NN decision
+        # is used directly.  This gives the NN primary authority over the
+        # weighted ensemble for fast, high-confidence decisions.
+        nn_decision = False
+        nn_override_threshold = self.cfg.ml.nn_override_threshold
+        if "lstm" in probas:
+            nn_proba = probas["lstm"][0]  # shape (3,)
+            nn_max_idx = int(np.argmax(nn_proba))
+            nn_max_conf = float(nn_proba[nn_max_idx])
+            if nn_max_conf >= nn_override_threshold:
+                nn_flat, nn_long, nn_short = self._proba_to_fls(nn_proba)
+                if nn_max_idx == 1 and nn_long >= self.cfg.ml.long_threshold:
+                    signal, confidence = 1, nn_long
+                    flat_prob, long_prob, short_prob = nn_flat, nn_long, nn_short
+                    nn_decision = True
+                elif nn_max_idx == 2 and nn_short >= self.cfg.ml.short_threshold:
+                    signal, confidence = 2, nn_short
+                    flat_prob, long_prob, short_prob = nn_flat, nn_long, nn_short
+                    nn_decision = True
+                elif nn_max_idx == 0:
+                    signal, confidence = 0, nn_flat
+                    flat_prob, long_prob, short_prob = nn_flat, nn_long, nn_short
+                    nn_decision = True
+                if nn_decision:
+                    log.debug(
+                        "NN override: signal=%d conf=%.4f (threshold=%.2f)",
+                        signal, confidence, nn_override_threshold,
+                    )
+
         # Agreement across models
         model_signals = {k: int(np.argmax(probas[k][0])) for k in probas}
         n_agree = sum(1 for s in model_signals.values() if s == signal)
         agreement = n_agree / len(model_signals) if model_signals else 0.0
 
-        if agreement < self.cfg.ml.min_ensemble_agreement:
+        # Suppress low-consensus ensemble signals; NN-override signals are
+        # trusted directly and bypass the ensemble-agreement gate.
+        if not nn_decision and agreement < self.cfg.ml.min_ensemble_agreement:
             signal = 0
             confidence = flat_prob
 
@@ -934,6 +977,7 @@ class QuantumEnsemble:
             "flat_prob": flat_prob,
             "agreement": agreement,
             "model_signals": model_signals,
+            "nn_decision": nn_decision,
         }
 
     # ── Health Check ───────────────────────────────────────────────────────────

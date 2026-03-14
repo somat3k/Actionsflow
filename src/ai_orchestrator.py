@@ -157,12 +157,22 @@ class GeminiProvider:
 
 
 class MultiAIOrchestrator:
-    """Orchestrates Gemini, OpenAI, OpenRouter, and Groq providers with fallback."""
+    """Orchestrates Groq (primary), Gemini, OpenRouter, and OpenAI providers with fallback.
+
+    Groq is the primary/default provider for AI inference due to its low-latency
+    API.  When Groq responds successfully the result is returned immediately
+    without querying other providers, keeping decision-making latency minimal.
+    Other providers are queried only when Groq is unavailable or returns no
+    response, in the order: Gemini → OpenRouter → OpenAI.
+    """
 
     def __init__(self, config: AppConfig) -> None:
         self.cfg = config
         self._fallback = GeminiOrchestrator(config)
         self._providers = self._build_providers(config)
+        # Name of the primary fast-path provider; responses from this provider
+        # are used immediately without waiting for the full provider list.
+        self._primary_provider_name: str = "Groq"
 
     def analyse_market_context(
         self,
@@ -215,7 +225,21 @@ class MultiAIOrchestrator:
         return _merge_performance(responses)
 
     def _build_providers(self, config: AppConfig) -> List[Any]:
+        """Build the ordered provider list with Groq as the first (primary) entry.
+
+        Provider priority:
+          1. Groq   – primary; low-latency inference, used as fast-path
+          2. Gemini – fallback when Groq is unavailable
+          3. OpenRouter – additional fallback
+          4. OpenAI     – final fallback before heuristic Gemini path
+        """
         providers: List[Any] = []
+
+        # Groq is the primary provider – always first for fast inference.
+        groq_provider = OpenAICompatibleOrchestrator("Groq", config, config.groq)
+        if groq_provider.available:
+            providers.append(groq_provider)
+
         gemini_provider = GeminiProvider(self._fallback)
         if gemini_provider.available:
             providers.append(gemini_provider)
@@ -228,17 +252,35 @@ class MultiAIOrchestrator:
         if openai_provider.available:
             providers.append(openai_provider)
 
-        groq_provider = OpenAICompatibleOrchestrator("Groq", config, config.groq)
-        if groq_provider.available:
-            providers.append(groq_provider)
         return providers
 
     def _collect(self, method: str, *args) -> List[Dict[str, Any]]:
+        """Query providers sequentially with a fast-path for the primary provider.
+
+        When the primary provider (Groq) is the first in the list and returns a
+        valid response, its result is returned immediately without querying the
+        remaining providers.  This minimises end-to-end inference latency for
+        the execute-analyse loop.
+
+        If the primary provider fails or returns an empty response, all remaining
+        providers are tried in order and their successful responses are accumulated
+        into the returned list (used by the merge functions to combine signals).
+
+        All provider objects expose a ``name`` attribute (``OpenAICompatibleOrchestrator``
+        sets it in ``__init__``; ``GeminiProvider`` defines it as a class attribute).
+        """
         responses: List[Dict[str, Any]] = []
         for provider in self._providers:
             result = getattr(provider, method)(*args)
             if isinstance(result, dict) and result:
                 responses.append(result)
+                # Fast-path: primary provider responded – return immediately.
+                if provider.name == self._primary_provider_name:
+                    log.debug(
+                        "Fast-path: %s responded successfully; skipping remaining providers",
+                        self._primary_provider_name,
+                    )
+                    return responses
         return responses
 
     def health_check(self) -> List[Dict[str, Any]]:

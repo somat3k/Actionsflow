@@ -37,6 +37,13 @@ class DummyEnsemble:
         self.loaded = True
         return {}
 
+    def train_multi_timeframe_with_progression(
+        self, tf_dataframes, symbol="BTC", epochs=1, reinforcement_alpha=0.1, primary_tf="1m"
+    ):
+        self.train_calls.append(symbol)
+        self.loaded = True
+        return [{"combined_scores": {}}]
+
     def predict(self, df):
         return {
             "signal": 0,
@@ -46,6 +53,7 @@ class DummyEnsemble:
             "flat_prob": 1.0,
             "agreement": 1.0,
             "model_signals": {},
+            "nn_decision": False,
         }
 
 
