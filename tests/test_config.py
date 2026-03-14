@@ -53,3 +53,19 @@ def test_redis_url_env_var_overrides_config(tmp_path, monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://env-host:6379")
     cfg = load_config(cfg_file)
     assert cfg.cache.redis_url == "redis://env-host:6379"
+
+
+def test_ml_nn_override_threshold_env_var_takes_precedence(tmp_path, monkeypatch):
+    """ML_NN_OVERRIDE_THRESHOLD env var must override YAML/default and be parsed as float."""
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(yaml.dump({"ml": {"signals": {"nn_override_threshold": 0.75}}}))
+
+    # Without env var, the YAML value is used.
+    cfg_yaml = load_config(cfg_file)
+    assert cfg_yaml.ml.nn_override_threshold == pytest.approx(0.75)
+
+    # With env var set, it takes precedence over the YAML value.
+    monkeypatch.setenv("ML_NN_OVERRIDE_THRESHOLD", "0.42")
+    cfg_env = load_config(cfg_file)
+    assert cfg_env.ml.nn_override_threshold == pytest.approx(0.42)
+    assert isinstance(cfg_env.ml.nn_override_threshold, float)

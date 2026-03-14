@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from src.config import AppConfig
-from src.gemini_orchestrator import GeminiOrchestrator, _SYSTEM_PROMPT
+from src.gemini_orchestrator import GeminiOrchestrator, _SYSTEM_PROMPT, build_market_context_prompt
 from src.utils import get_logger
 
 log = get_logger(__name__)
@@ -619,42 +619,7 @@ def _build_market_context_prompt(
     ml_signal: Dict[str, Any],
     snapshot: Dict[str, Any],
 ) -> str:
-    funding = snapshot.get("funding", {})
-    order_book = snapshot.get("order_book", {})
-    signal_map = {0: "FLAT", 1: "LONG", 2: "SHORT"}
-    return textwrap.dedent(f"""
-        Analyse the following market context for {symbol} and validate the ML signal.
-
-        ML Signal: {signal_map.get(ml_signal.get('signal', 0), 'FLAT')}
-        ML Confidence: {ml_signal.get('confidence', 0):.4f}
-        Ensemble Agreement: {ml_signal.get('agreement', 0):.4f}
-        Long Probability: {ml_signal.get('long_prob', 0):.4f}
-        Short Probability: {ml_signal.get('short_prob', 0):.4f}
-
-        Market Data:
-        - Funding Rate: {funding.get('funding_rate', 0) * 100:.4f}% (raw decimal × 100)
-        - Open Interest: {funding.get('open_interest', 0):.2f}
-        - Mark Price: {funding.get('mark_price', 0):.4f}
-        - Order Book Imbalance: {order_book.get('order_book_imbalance', 0):.4f} (range -1 to +1; positive = buy-heavy)
-        - Bid/Ask Spread (bps): {order_book.get('bid_ask_spread_bps', 0):.2f}
-        - Trade Flow Imbalance: {snapshot.get('trade_flow_imbalance', 0):.4f} (range -1 to +1; positive = buyer-driven)
-
-        Lean toward preserving the ML signal direction. Only set validated_signal
-        to 0 (FLAT) when the market data provides strong, clear evidence that
-        contradicts the ML signal (e.g., funding rate > 0.1% or < -0.1%, or
-        abs(Order Book Imbalance) > 0.5 in the direction opposing the ML signal,
-        or abs(Trade Flow Imbalance) > 0.5 opposing the ML signal). When uncertain,
-        keep the ML signal as-is.
-
-        Respond with JSON only:
-        {{
-            "validated_signal": <0|1|2>,
-            "confidence_adjustment": <float between -0.2 and 0.2>,
-            "regime": "<trending_up|trending_down|ranging|volatile|consolidating>",
-            "reasoning": "<brief explanation>",
-            "risk_flags": ["<flag1>", ...]
-        }}
-    """).strip()
+    return build_market_context_prompt(symbol, ml_signal, snapshot)
 
 
 def _build_leverage_prompt(
