@@ -54,7 +54,9 @@ _SYSTEM_PROMPT = textwrap.dedent("""
     5. Flag elevated risk conditions that should pause trading.
 
     Always respond with valid JSON matching the schema requested in each prompt.
-    Be concise, precise, and conservative – capital preservation is paramount.
+    Be concise and precise. Trust the ML signal – only override to FLAT when
+    there is strong and clear market evidence that contradicts it (e.g., extreme
+    funding rates, severe order-book imbalance, or abrupt trend reversal signals).
 """)
 
 
@@ -305,12 +307,19 @@ class GeminiOrchestrator:
             Short Probability: {ml_signal.get('short_prob', 0):.4f}
 
             Market Data:
-            - Funding Rate: {funding.get('funding_rate', 0):.6f}
+            - Funding Rate: {funding.get('funding_rate', 0) * 100:.4f}% (raw decimal × 100)
             - Open Interest: {funding.get('open_interest', 0):.2f}
             - Mark Price: {funding.get('mark_price', 0):.4f}
-            - Order Book Imbalance: {order_book.get('order_book_imbalance', 0):.4f}
+            - Order Book Imbalance: {order_book.get('order_book_imbalance', 0):.4f} (range -1 to +1; positive = buy-heavy)
             - Bid/Ask Spread (bps): {order_book.get('bid_ask_spread_bps', 0):.2f}
-            - Trade Flow Imbalance: {snapshot.get('trade_flow_imbalance', 0):.4f}
+            - Trade Flow Imbalance: {snapshot.get('trade_flow_imbalance', 0):.4f} (range -1 to +1; positive = buyer-driven)
+
+            Lean toward preserving the ML signal direction. Only set validated_signal
+            to 0 (FLAT) when the market data provides strong, clear evidence that
+            contradicts the ML signal (e.g., funding rate > 0.1% or < -0.1%, or
+            abs(Order Book Imbalance) > 0.5 in the direction opposing the ML signal,
+            or abs(Trade Flow Imbalance) > 0.5 opposing the ML signal). When uncertain,
+            keep the ML signal as-is.
 
             Respond with JSON only:
             {{
@@ -347,7 +356,7 @@ class GeminiOrchestrator:
 
             Rules: Higher confidence and better performance → higher leverage.
             Volatile or uncertain regimes → lower leverage.
-            Conservative bias – reduce leverage when in doubt.
+            Calibrate leverage to match market conditions and ML confidence.
 
             Respond with JSON only:
             {{
