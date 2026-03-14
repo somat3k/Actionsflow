@@ -236,12 +236,13 @@ def _build_multiplex_signal(
                 pred = ensemble.predict(df_tf)
                 pred["timeframe"] = tf
             tf_predictions[tf] = pred
-            if (
+            should_capture_nn_priority_signal = (
                 nn_priority_enabled
                 and tf == cfg.data.primary_interval
                 and not has_tf_model
                 and nn_priority_signal is None
-            ):
+            )
+            if should_capture_nn_priority_signal:
                 nn_priority_signal = pred
         except Exception as exc:
             log.debug("Multiplex prediction skipped for %s: %s", tf, exc)
@@ -1503,6 +1504,9 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
     if snapshot_override is not None:
         log.info("Cleared DATA_SNAPSHOT_END_MS; using real-time data for pipeline")
 
+    def _sanitize_error(error: str) -> str:
+        return error.replace("`", "\\`").replace("\n", " ").strip()
+
     def _record_stage(
         stage: str,
         status: str,
@@ -1519,7 +1523,8 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
         if error:
             payload["error"] = error
         db.set_cache("training_pipeline:progress", payload)
-        error_line = f"- Error: `{error}`\n" if error else ""
+        safe_error = _sanitize_error(error) if error else ""
+        error_line = f"- Error: `{safe_error}`\n" if safe_error else ""
         _print_github_summary(
             f"### 🧪 Training Pipeline – {stage}\n\n"
             f"- Status: **{status.upper()}**\n"
