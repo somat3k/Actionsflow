@@ -1506,7 +1506,8 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
 
     def _escape_markdown_error(error: str) -> str:
         """Remove newlines and escape markdown special characters for summary output."""
-        cleaned = error.replace("\n", " ").strip()
+        cleaned = error.replace("\\", "\\\\")
+        cleaned = cleaned.replace("\n", " ").strip()
         return re.sub(r"([-`*_\[\]()#+!|<>])", r"\\\1", cleaned)
 
     def _record_stage(
@@ -1536,10 +1537,11 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
         _print_github_summary(summary)
 
     def _record_failure(stage: str, rc: int, error: Optional[str] = None) -> int:
+        sanitized_error = _escape_markdown_error(error) if error else None
         _record_stage(stage, "failed", rc, error=error)
         metadata = {"failed_stage": stage}
-        if error:
-            metadata["error"] = error
+        if sanitized_error:
+            metadata["error"] = sanitized_error
         db.record_task_completion(
             task_name="training_pipeline",
             run_type="training-pipeline",
