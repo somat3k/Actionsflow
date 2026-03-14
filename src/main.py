@@ -214,10 +214,12 @@ def _build_multiplex_signal(
     tf_predictions: Dict[str, Any] = {}
     nn_priority_symbols = {s.upper() for s in cfg.ml.nn_priority_symbols}
     nn_priority_signal: Optional[Dict[str, Any]] = None
+
     def _apply_nn_priority() -> Optional[Dict[str, Any]]:
         if nn_priority_signal and nn_priority_signal.get("nn_decision"):
-            nn_priority_signal["delegated_to"] = "nn_override"
-            return nn_priority_signal
+            nn_payload = dict(nn_priority_signal)
+            nn_payload["delegated_to"] = "nn_override"
+            return nn_payload
         return None
     if symbol and symbol.upper() in nn_priority_symbols:
         nn_primary_df = candles.get(cfg.data.primary_interval)
