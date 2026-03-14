@@ -1508,7 +1508,7 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
     def _sanitize_error(error: str) -> str:
         """Escape markdown special characters for summary output."""
         cleaned = error.replace("\n", " ").strip()
-        return re.sub(r"([`*_\[\]()#+\-!|<>])", r"\\\1", cleaned)
+        return re.sub(r"([`*_\[\]()#+!|<>-])", r"\\\1", cleaned)
 
     def _record_stage(
         stage: str,
@@ -1535,6 +1535,20 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
             f"{error_line}"
         )
 
+    def _record_failure(stage: str, rc: int, error: Optional[str] = None) -> int:
+        _record_stage(stage, "failed", rc, error=error)
+        metadata = {"failed_stage": stage}
+        if error:
+            metadata["error"] = error
+        db.record_task_completion(
+            task_name="training_pipeline",
+            run_type="training-pipeline",
+            mode=mode,
+            status="failed",
+            metadata=metadata,
+        )
+        return rc
+
     steps = [
         ("training", run_training),
         ("evaluate", run_evaluation),
@@ -1547,27 +1561,10 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
                 step_result = step(config_path)
             except Exception as exc:
                 log.exception("Training pipeline errored during %s stage", name)
-                error_msg = str(exc)
-                _record_stage(name, "failed", 1, error=error_msg)
-                db.record_task_completion(
-                    task_name="training_pipeline",
-                    run_type="training-pipeline",
-                    mode=mode,
-                    status="failed",
-                    metadata={"failed_stage": name, "error": error_msg},
-                )
-                return 1
+                return _record_failure(name, 1, error=str(exc))
             if step_result != 0:
                 log.error("Training pipeline failed during %s stage", name)
-                _record_stage(name, "failed", step_result)
-                db.record_task_completion(
-                    task_name="training_pipeline",
-                    run_type="training-pipeline",
-                    mode=mode,
-                    status="failed",
-                    metadata={"failed_stage": name},
-                )
-                return step_result
+                return _record_failure(name, step_result)
             _record_stage(name, "completed", step_result)
 
         db.record_task_completion(
