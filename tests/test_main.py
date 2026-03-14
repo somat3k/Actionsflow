@@ -245,6 +245,14 @@ def test_training_pipeline_sequences_steps(monkeypatch, tmp_path):
 
     assert run_training_pipeline() == 0
     assert calls == ["training", "evaluate", "export"]
+    db = DatabaseManager(db_path, cache_enabled=False)
+    try:
+        progress = db.get_cache("training_pipeline:progress")
+    finally:
+        db.close()
+    assert isinstance(progress, dict)
+    assert progress.get("stage") == "export"
+    assert progress.get("status") == "completed"
 
 
 def test_full_cycle_skips_live_trading_when_disabled(monkeypatch, tmp_path):

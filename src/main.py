@@ -214,6 +214,11 @@ def _build_multiplex_signal(
     tf_predictions: Dict[str, Any] = {}
     nn_priority_symbols = {s.upper() for s in cfg.ml.nn_priority_symbols}
     nn_priority_signal: Optional[Dict[str, Any]] = None
+    def _apply_nn_priority() -> Optional[Dict[str, Any]]:
+        if nn_priority_signal and nn_priority_signal.get("nn_decision"):
+            nn_priority_signal["delegated_to"] = "nn_override"
+            return nn_priority_signal
+        return None
     if symbol and symbol.upper() in nn_priority_symbols:
         nn_primary_df = candles.get(cfg.data.primary_interval)
         if nn_primary_df is not None and not nn_primary_df.empty:
@@ -244,16 +249,16 @@ def _build_multiplex_signal(
         if ml_signal.get("agreement", 1.0) < cfg.ml.min_ensemble_agreement:
             ml_signal["signal"] = 0
             ml_signal["confidence"] = ml_signal.get("flat_prob", 1.0)
-        if nn_priority_signal and nn_priority_signal.get("nn_decision"):
-            nn_priority_signal["delegated_to"] = "nn_override"
-            return nn_priority_signal
+        nn_override = _apply_nn_priority()
+        if nn_override:
+            return nn_override
         ml_signal["delegated_to"] = "multiplex"
         return ml_signal
 
     # Fewer than two timeframes – fall back to delegation agent.
-    if nn_priority_signal and nn_priority_signal.get("nn_decision"):
-        nn_priority_signal["delegated_to"] = "nn_override"
-        return nn_priority_signal
+    nn_override = _apply_nn_priority()
+    if nn_override:
+        return nn_override
     primary_df = candles.get(cfg.data.primary_interval)
     if primary_df is not None and not primary_df.empty:
         return delegation_agent.predict(primary_df, regime=prior_regime)
@@ -1483,7 +1488,8 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
     mode = os.environ.get("TRADING_MODE", cfg.trading.mode)
 
     log.info("=== TRAINING PIPELINE ===")
-    if os.environ.pop("DATA_SNAPSHOT_END_MS", None) is not None:
+    snapshot_override = os.environ.pop("DATA_SNAPSHOT_END_MS", None)
+    if snapshot_override is not None:
         log.info("Cleared DATA_SNAPSHOT_END_MS; using real-time data for pipeline")
 
     def _record_stage(stage: str, status: str, rc: Optional[int] = None) -> None:
@@ -1505,30 +1511,34 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
         ("evaluate", run_evaluation),
         ("export", run_model_export),
     ]
-    for name, step in steps:
-        _record_stage(name, "running")
-        step_result = step(config_path)
-        if step_result != 0:
-            log.error("Training pipeline failed during %s stage", name)
-            _record_stage(name, "failed", step_result)
-            db.record_task_completion(
-                task_name="training_pipeline",
-                run_type="training-pipeline",
-                mode=mode,
-                status="failed",
-                metadata={"failed_stage": name},
-            )
-            return step_result
-        _record_stage(name, "completed", step_result)
+    try:
+        for name, step in steps:
+            _record_stage(name, "running")
+            step_result = step(config_path)
+            if step_result != 0:
+                log.error("Training pipeline failed during %s stage", name)
+                _record_stage(name, "failed", step_result)
+                db.record_task_completion(
+                    task_name="training_pipeline",
+                    run_type="training-pipeline",
+                    mode=mode,
+                    status="failed",
+                    metadata={"failed_stage": name},
+                )
+                return step_result
+            _record_stage(name, "completed", step_result)
 
-    db.record_task_completion(
-        task_name="training_pipeline",
-        run_type="training-pipeline",
-        mode=mode,
-        status="success",
-        metadata={"stages": [s for s, _ in steps]},
-    )
-    return 0
+        db.record_task_completion(
+            task_name="training_pipeline",
+            run_type="training-pipeline",
+            mode=mode,
+            status="success",
+            metadata={"stages": [s for s, _ in steps]},
+        )
+        return 0
+    finally:
+        if snapshot_override is not None:
+            os.environ["DATA_SNAPSHOT_END_MS"] = snapshot_override
 
 
 def run_model_export(config_path: Optional[Path] = None) -> int:
