@@ -993,8 +993,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 exit_reason = "thresholds_passed"
                 break
 
-    # Fallback if exit_reason was not explicitly set; this shouldn't happen with
-    # the current break assignments but keeps metadata safe for future changes.
+    # Fallback when exit_reason was not set by normal termination paths.
     if exit_reason is None:
         exit_reason = "interrupted"
     db.record_task_completion(
