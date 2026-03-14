@@ -821,7 +821,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
             log.warning("Groq payload probe failed: %s", exc)
 
     global_epoch = 0
-    exit_reason = "completed"
+    exit_reason: Optional[str] = None
     while True:
         if max_epochs > 0 and global_epoch >= max_epochs:
             log.info("Infinity loop reached max_epochs=%d. Stopping.", max_epochs)
@@ -909,8 +909,6 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
         # ── Periodic evaluation & hyperparameter adjustment ───────────────
         # Force an evaluation after the first epoch when exit-on-pass is enabled
         # so training can exit immediately if initial results satisfy thresholds.
-        # When exit_on_pass is enabled, the supervised.epoch == 1 check is the
-        # early-exit optimization when thresholds are met.
         should_eval = supervised.should_evaluate() or (exit_on_pass and supervised.epoch == 1)
         if should_eval:
             trade_history = [asdict(t) for t in broker.trade_history]
@@ -994,6 +992,8 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 exit_reason = "thresholds_passed"
                 break
 
+    if exit_reason is None:
+        exit_reason = "interrupted"
     db.record_task_completion(
         task_name="infinity_training",
         run_type="infinity-train",
