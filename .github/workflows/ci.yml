@@ -86,6 +86,7 @@ jobs:
         env:
           TRADING_MODE: test
           LOG_LEVEL: INFO
+          TRAINING_SYMBOLS: ETH
         run: |
           echo "## 🤖 Integration Test – Model Training" >> "$GITHUB_STEP_SUMMARY"
           python -m src.main --run-type train-models --mode test
@@ -96,6 +97,7 @@ jobs:
         env:
           TRADING_MODE: test
           LOG_LEVEL: INFO
+          TRAINING_SYMBOLS: ETH
         run: |
           echo "## 📊 Integration Test – Signal Cycle" >> "$GITHUB_STEP_SUMMARY"
           python -m src.main --run-type signal --mode test
@@ -106,6 +108,7 @@ jobs:
         env:
           TRADING_MODE: test
           LOG_LEVEL: INFO
+          TRAINING_SYMBOLS: ETH
         run: |
           echo "## 📈 Integration Test – Evaluation" >> "$GITHUB_STEP_SUMMARY"
           python -m src.main --run-type evaluate --mode test
@@ -133,4 +136,3 @@ jobs:
             results/
             .trading_state/
           retention-days: 7
-

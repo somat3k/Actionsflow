@@ -45,11 +45,11 @@ def test_pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("TRADING_MODE", "test")
     monkeypatch.setenv("LOG_LEVEL", "INFO")
     monkeypatch.setenv("TRAINING_EPOCHS", "2")
-    # Restrict training to BTC only so the test suite completes in a reasonable
+    # Restrict training to ETH only so the test suite completes in a reasonable
     # time.  Training all 9 configured symbols × 2 epochs × 5 timeframes with
     # real ML models (XGBoost, RF, …) made integration runs appear as an
     # infinite loop because of the wall-clock time with no visible progress.
-    monkeypatch.setenv("TRAINING_SYMBOLS", "BTC")
+    monkeypatch.setenv("TRAINING_SYMBOLS", "ETH")
     monkeypatch.chdir(tmp_path)
 
     # Pre-create directories expected by the pipeline.
