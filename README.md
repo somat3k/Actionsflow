@@ -74,7 +74,7 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 | `groq.model` | `oss-120` | Groq model for orchestration |
 | `ml.signals.nn_priority_symbols` | `ETH` | Symbols that prioritize NN overrides in multiplex signals |
 | `ml.infinity_loop.training_symbols` | `ETH` | Default infinity-loop training symbols when TRAINING_SYMBOLS unset |
-| `ml.infinity_loop.force_refresh` | `true` | Refresh datasets every infinity-loop epoch for real-time training |
+| `ml.infinity_loop.force_refresh` | `false` | Refresh datasets every infinity-loop epoch for real-time training |
 | `openrouter.model` | `openai/gpt-4o-mini` | OpenRouter model for orchestration |
 
 ---
