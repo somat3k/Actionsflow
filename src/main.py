@@ -741,8 +741,6 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
             log.warning("Invalid INFINITY_EVALUATION_INTERVAL=%s; using config value", eval_interval_env)
 
     exit_on_pass = _parse_bool_env("INFINITY_EXIT_ON_PASS", default=True)
-    if os.environ.get("INFINITY_EXIT_ON_PASS") is None:
-        log.info("INFINITY_EXIT_ON_PASS not set; defaulting to true")
 
     max_epochs = cfg.ml.infinity_loop_max_epochs  # 0 = infinite
     training_epochs = max(1, cfg.ml.training_epochs)
@@ -815,7 +813,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
             log.warning("Groq payload probe failed: %s", exc)
 
     global_epoch = 0
-    exit_reason = "incomplete"
+    exit_reason = "interrupted"
     while True:
         if max_epochs > 0 and global_epoch >= max_epochs:
             log.info("Infinity loop reached max_epochs=%d. Stopping.", max_epochs)
