@@ -198,6 +198,14 @@ def _parse_bool_env(key: str, default: bool = False) -> bool:
     return default
 
 
+def _resolve_training_epochs(cfg: AppConfig, *, max_epochs: int = 10) -> int:
+    epochs = max(1, cfg.ml.training_epochs)
+    if epochs > max_epochs:
+        log.info("Capping training epochs from %d to %d", epochs, max_epochs)
+        return max_epochs
+    return epochs
+
+
 def _build_multiplex_signal(
     cfg: AppConfig,
     ensemble: Any,
@@ -435,7 +443,7 @@ def _ensure_model_ready(
             primary_df = next(iter(tf_dataframes.values()))
 
         try:
-            training_epochs = max(1, cfg.ml.training_epochs)
+            training_epochs = _resolve_training_epochs(cfg)
             reinforcement_alpha = cfg.ml.reinforcement_alpha
             if (
                 training_program == "multi_timeframe"
@@ -479,7 +487,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
     - Fetches OHLCV data for all five timeframes (1m, 5m, 15m, 1h, 1d).
     - Also fetches index/equity data (GOOGL, AAPL, NVDA, US30, SPX, JPM,
       SPY, NASDAQ) via Yahoo Finance for cross-market training enrichment.
-    - Runs ``training_epochs`` (default 200) progressive epochs per symbol.
+    - Runs ``training_epochs`` (default 200, capped at 10) progressive epochs per symbol.
     - Applies reinforcement-learning weight updates after each epoch.
     - Displays tqdm progress bars for the training session, each symbol,
       and each epoch's timeframe loop.
@@ -491,7 +499,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
     db = _build_db_manager(cfg)
     log.setLevel(cfg.system.log_level)
 
-    training_epochs = max(1, cfg.ml.training_epochs)
+    training_epochs = _resolve_training_epochs(cfg)
     reinforcement_alpha = cfg.ml.reinforcement_alpha
     training_program = _resolve_training_program()
     force_retrain = _parse_bool_env("FORCE_RETRAIN")
@@ -751,7 +759,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
     exit_on_pass = _parse_bool_env("INFINITY_EXIT_ON_PASS", default=True)
 
     max_epochs = cfg.ml.infinity_loop_max_epochs  # 0 = infinite
-    training_epochs = max(1, cfg.ml.training_epochs)
+    training_epochs = _resolve_training_epochs(cfg)
     reinforcement_alpha = cfg.ml.reinforcement_alpha
     training_program = _resolve_training_program()
     force_retrain = _parse_bool_env("FORCE_RETRAIN")
