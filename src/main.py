@@ -907,9 +907,9 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
             _record_training_time(db, trained_symbols)
 
         # ── Periodic evaluation & hyperparameter adjustment ───────────────
-        # Force an evaluation after the first epoch (epoch starts at 1 after
-        # increment_epoch) when exit-on-pass is enabled so training can exit
-        # immediately if initial results satisfy thresholds.
+        # Force an evaluation after the first epoch (supervised.epoch == 1 after
+        # the increment_epoch call above) when exit-on-pass is enabled so training
+        # can exit immediately if initial results satisfy thresholds.
         should_eval = supervised.should_evaluate() or (exit_on_pass and supervised.epoch == 1)
         if should_eval:
             trade_history = [asdict(t) for t in broker.trade_history]
@@ -993,7 +993,8 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 exit_reason = "thresholds_passed"
                 break
 
-    # Fallback when the loop exits without a managed reason (e.g., external interrupt).
+    # Fallback when the loop exits without a managed reason (e.g., a break without
+    # assigning exit_reason in future edits).
     if exit_reason is None:
         exit_reason = "interrupted"
     db.record_task_completion(
