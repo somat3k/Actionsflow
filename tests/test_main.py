@@ -9,6 +9,7 @@ from src.config import load_config
 from src.database_manager import DatabaseManager
 from src.main import (
     _get_hyperliquid_private_key,
+    _resolve_training_epochs,
     _resolve_trading_eligibility,
     main,
     run_full_cycle,
@@ -159,6 +160,27 @@ def test_training_pipeline_run_type_invokes_handler(monkeypatch, tmp_path):
     with patch("src.main.run_training_pipeline", return_value=0) as mock_pipeline:
         assert main(["--run-type", "training-pipeline", "--mode", "test"]) == 0
     mock_pipeline.assert_called_once()
+
+
+def test_resolve_training_epochs_caps_default(monkeypatch):
+    monkeypatch.delenv("MAX_TRAINING_EPOCHS", raising=False)
+    cfg = load_config()
+    cfg.ml.training_epochs = 200
+    assert _resolve_training_epochs(cfg) == 10
+
+
+def test_resolve_training_epochs_env_override(monkeypatch):
+    monkeypatch.setenv("MAX_TRAINING_EPOCHS", "5")
+    cfg = load_config()
+    cfg.ml.training_epochs = 200
+    assert _resolve_training_epochs(cfg) == 5
+
+
+def test_resolve_training_epochs_invalid_env(monkeypatch):
+    monkeypatch.setenv("MAX_TRAINING_EPOCHS", "bad")
+    cfg = load_config()
+    cfg.ml.training_epochs = 200
+    assert _resolve_training_epochs(cfg) == 10
 
 
 def test_resolve_trading_eligibility_uses_cache(tmp_path, monkeypatch):
