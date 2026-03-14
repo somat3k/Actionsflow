@@ -213,8 +213,8 @@ def _build_multiplex_signal(
     ]
     candles = snapshot.get("candles", {})
     tf_predictions: Dict[str, Any] = {}
+    symbol_upper = symbol.upper() if symbol else ""
     nn_priority_symbols = {s.upper() for s in cfg.ml.nn_priority_symbols}
-    nn_priority_enabled = bool(symbol and symbol.upper() in nn_priority_symbols)
     nn_priority_signal: Optional[Dict[str, Any]] = None
 
     def _apply_nn_priority() -> Optional[Dict[str, Any]]:
@@ -238,7 +238,8 @@ def _build_multiplex_signal(
                 pred["timeframe"] = tf
             tf_predictions[tf] = pred
             should_capture_nn_priority_signal = (
-                nn_priority_enabled
+                symbol_upper
+                and symbol_upper in nn_priority_symbols
                 and tf == cfg.data.primary_interval
                 and not has_tf_model
             )
@@ -247,7 +248,7 @@ def _build_multiplex_signal(
         except Exception as exc:
             log.debug("Multiplex prediction skipped for %s: %s", tf, exc)
 
-    if nn_priority_enabled and nn_priority_signal is None:
+    if symbol_upper and symbol_upper in nn_priority_symbols and nn_priority_signal is None:
         nn_primary_df = candles.get(cfg.data.primary_interval)
         if nn_primary_df is not None and not nn_primary_df.empty:
             try:
@@ -1505,6 +1506,7 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
         log.info("Cleared DATA_SNAPSHOT_END_MS; using real-time data for pipeline")
 
     def _sanitize_error(error: str) -> str:
+        """Escape markdown special characters for summary output."""
         cleaned = error.replace("\n", " ").strip()
         return re.sub(r"([`*_\[\]()#+\-!|<>])", r"\\\1", cleaned)
 
@@ -1521,8 +1523,9 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
         }
         if rc is not None:
             payload["exit_code"] = rc
-        safe_error = _sanitize_error(error) if error else ""
-        if safe_error:
+        safe_error = ""
+        if error:
+            safe_error = _sanitize_error(error)
             payload["error"] = safe_error
         db.set_cache("training_pipeline:progress", payload)
         error_line = f"- Error: {safe_error}\n" if safe_error else ""
