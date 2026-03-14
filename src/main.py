@@ -1471,6 +1471,66 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
     return 0
 
 
+def run_training_pipeline(config_path: Optional[Path] = None) -> int:
+    """Run the training pipeline in separate real-time stages.
+
+    Executes training → evaluation → export sequentially while recording
+    per-stage progress in the cache for monitoring.
+    """
+    cfg = load_config(config_path)
+    db = _build_db_manager(cfg)
+    log.setLevel(cfg.system.log_level)
+    mode = os.environ.get("TRADING_MODE", cfg.trading.mode)
+
+    log.info("=== TRAINING PIPELINE ===")
+    if os.environ.pop("DATA_SNAPSHOT_END_MS", None) is not None:
+        log.info("Cleared DATA_SNAPSHOT_END_MS; using real-time data for pipeline")
+
+    def _record_stage(stage: str, status: str, rc: Optional[int] = None) -> None:
+        payload: Dict[str, Any] = {
+            "stage": stage,
+            "status": status,
+            "timestamp": utc_now().isoformat(),
+        }
+        if rc is not None:
+            payload["exit_code"] = rc
+        db.set_cache("training_pipeline:progress", payload)
+        _print_github_summary(
+            f"### 🧪 Training Pipeline – {stage}\n\n"
+            f"- Status: **{status.upper()}**\n"
+        )
+
+    steps = [
+        ("training", run_training),
+        ("evaluate", run_evaluation),
+        ("export", run_model_export),
+    ]
+    for name, step in steps:
+        _record_stage(name, "running")
+        step_result = step(config_path)
+        if step_result != 0:
+            log.error("Training pipeline failed during %s stage", name)
+            _record_stage(name, "failed", step_result)
+            db.record_task_completion(
+                task_name="training_pipeline",
+                run_type="training-pipeline",
+                mode=mode,
+                status="failed",
+                metadata={"failed_stage": name},
+            )
+            return step_result
+        _record_stage(name, "completed", step_result)
+
+    db.record_task_completion(
+        task_name="training_pipeline",
+        run_type="training-pipeline",
+        mode=mode,
+        status="success",
+        metadata={"stages": [s for s, _ in steps]},
+    )
+    return 0
+
+
 def run_model_export(config_path: Optional[Path] = None) -> int:
     """Export trained sklearn models (GB, RF, Linear) to ONNX format and
     save per-symbol OHLCV training data as CSV files.
@@ -1651,8 +1711,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Quantum Trading System")
     parser.add_argument(
         "--run-type",
-        choices=["training", "signal", "evaluate", "train-models", "infinity-train",
-                 "export-models", "full-cycle", "health-check"],
+        choices=[
+            "training", "signal", "evaluate", "train-models", "infinity-train",
+            "export-models", "full-cycle", "training-pipeline", "health-check",
+        ],
         required=True,
         help="What to run",
     )
@@ -1690,6 +1752,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return run_model_export(cfg_path)
     elif args.run_type == "full-cycle":
         return run_full_cycle(cfg_path)
+    elif args.run_type == "training-pipeline":
+        return run_training_pipeline(cfg_path)
     elif args.run_type == "health-check":
         return run_health_check(cfg_path)
     else:

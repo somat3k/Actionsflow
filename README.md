@@ -181,6 +181,9 @@ python -m src.main --run-type evaluate --mode paper
 # Full pipeline run (training → signal → evaluate → export → eligibility → trading)
 python -m src.main --run-type full-cycle --mode paper
 
+# Staged training pipeline (training → evaluate → export, real-time data)
+python -m src.main --run-type training-pipeline --mode paper
+
 # Optional overrides
 # DATA_SNAPSHOT_END_MS=...            # Freeze data snapshot across the full cycle
 # TRADING_ELIGIBILITY_OVERRIDE=true   # Force trading step even if evaluation fails

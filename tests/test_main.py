@@ -13,6 +13,7 @@ from src.main import (
     main,
     run_full_cycle,
     run_paper_signal,
+    run_training_pipeline,
 )
 from src.utils import utc_now
 
@@ -147,6 +148,19 @@ def test_full_cycle_run_type_invokes_handler(monkeypatch, tmp_path):
     mock_cycle.assert_called_once()
 
 
+def test_training_pipeline_run_type_invokes_handler(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADING_MODE", "test")
+    monkeypatch.setenv("LOG_LEVEL", "WARNING")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "results").mkdir()
+    (tmp_path / ".trading_state").mkdir()
+
+    with patch("src.main.run_training_pipeline", return_value=0) as mock_pipeline:
+        assert main(["--run-type", "training-pipeline", "--mode", "test"]) == 0
+    mock_pipeline.assert_called_once()
+
+
 def test_resolve_trading_eligibility_uses_cache(tmp_path, monkeypatch):
     monkeypatch.delenv("TRADING_ELIGIBILITY_OVERRIDE", raising=False)
     cfg = load_config()
@@ -204,6 +218,33 @@ def test_full_cycle_sequences_steps(monkeypatch, tmp_path):
 
     assert run_full_cycle() == 0
     assert calls == ["training", "signal", "evaluate", "export"]
+
+
+def test_training_pipeline_sequences_steps(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("LOG_LEVEL", "WARNING")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "results").mkdir()
+    (tmp_path / ".trading_state").mkdir()
+
+    calls = []
+
+    def _record(name):
+        def _runner(*_args, **_kwargs):
+            calls.append(name)
+            return 0
+        return _runner
+
+    cfg = load_config()
+    db_path = tmp_path / cfg.system.state_dir / cfg.system.database_file
+    monkeypatch.setattr("src.main._build_db_manager", lambda _cfg: DatabaseManager(db_path))
+    monkeypatch.setattr("src.main.run_training", _record("training"))
+    monkeypatch.setattr("src.main.run_evaluation", _record("evaluate"))
+    monkeypatch.setattr("src.main.run_model_export", _record("export"))
+
+    assert run_training_pipeline() == 0
+    assert calls == ["training", "evaluate", "export"]
 
 
 def test_full_cycle_skips_live_trading_when_disabled(monkeypatch, tmp_path):
