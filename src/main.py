@@ -187,7 +187,15 @@ def _parse_bool_env(key: str, default: bool = False) -> bool:
     raw = os.environ.get(key)
     if raw is None:
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+    value = raw.strip().lower()
+    truthy = {"1", "true", "yes", "y", "on"}
+    falsy = {"0", "false", "no", "n", "off"}
+    if value in truthy:
+        return True
+    if value in falsy:
+        return False
+    log.warning("Invalid boolean value for %s=%s; using default=%s", key, raw, default)
+    return default
 
 
 def _build_multiplex_signal(
@@ -813,7 +821,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
             log.warning("Groq payload probe failed: %s", exc)
 
     global_epoch = 0
-    exit_reason = "interrupted"
+    exit_reason = "not_completed"
     while True:
         if max_epochs > 0 and global_epoch >= max_epochs:
             log.info("Infinity loop reached max_epochs=%d. Stopping.", max_epochs)
@@ -901,7 +909,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
         # ── Periodic evaluation & hyperparameter adjustment ───────────────
         # Force an evaluation after the first epoch when exit-on-pass is enabled
         # so training can exit immediately if initial results satisfy thresholds.
-        # The epoch==1 check is the early-exit optimization when thresholds are met.
+        # The supervised.epoch == 1 check is the early-exit optimization when thresholds are met.
         should_eval = supervised.should_evaluate() or (exit_on_pass and supervised.epoch == 1)
         if should_eval:
             trade_history = [asdict(t) for t in broker.trade_history]
