@@ -1505,8 +1505,8 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
         log.info("Cleared DATA_SNAPSHOT_END_MS; using real-time data for pipeline")
 
     def _sanitize_error(error: str) -> str:
-        cleaned = error.replace("\n", " ").strip()
-        cleaned = cleaned.replace("\\", "\\\\")
+        cleaned = error.replace("\\", "\\\\")
+        cleaned = cleaned.replace("\n", " ").strip()
         for char in ("`", "*", "_", "[", "]", "(", ")", "#", "+", "-", "!", "|", "<", ">"):
             cleaned = cleaned.replace(char, f"\\{char}")
         return cleaned
@@ -1524,14 +1524,12 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
         }
         if rc is not None:
             payload["exit_code"] = rc
-        if error:
-            payload["error"] = error
-        db.set_cache("training_pipeline:progress", payload)
+        safe_error = ""
         if error:
             safe_error = _sanitize_error(error)
-            error_line = f"- Error: `{safe_error}`\n"
-        else:
-            error_line = ""
+            payload["error"] = safe_error
+        db.set_cache("training_pipeline:progress", payload)
+        error_line = f"- Error: `{safe_error}`\n" if safe_error else ""
         _print_github_summary(
             f"### 🧪 Training Pipeline – {stage}\n\n"
             f"- Status: **{status.upper()}**\n"

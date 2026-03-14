@@ -409,6 +409,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         if "weight" in model_cfg:
             model_weights[internal_name] = float(model_cfg["weight"])
     infinity_raw = training.get("infinity_loop", ml_raw.get("infinity_loop", {}))
+    # Empty env vars intentionally clear defaults for symbol lists.
     nn_priority_env = os.environ.get("NN_PRIORITY_SYMBOLS")
     nn_priority_symbols = (
         _parse_symbol_list(nn_priority_env)
