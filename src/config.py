@@ -139,7 +139,7 @@ class GeminiConfig:
 @dataclass
 class GroqConfig:
     api_key: str = ""
-    model: str = "oss-120"
+    model: str = "llama-3.3-70b-versatile"
     api_url: str = "https://api.groq.com/openai/v1/chat/completions"
     temperature: float = 0.1
     max_output_tokens: int = 2048
@@ -409,16 +409,16 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         if "weight" in model_cfg:
             model_weights[internal_name] = float(model_cfg["weight"])
     infinity_raw = training.get("infinity_loop", ml_raw.get("infinity_loop", {}))
-    nn_priority_env = os.environ.get("NN_PRIORITY_SYMBOLS", "")
+    nn_priority_env = os.environ.get("NN_PRIORITY_SYMBOLS")
     nn_priority_symbols = (
         _parse_symbol_list(nn_priority_env)
-        if nn_priority_env
+        if nn_priority_env is not None
         else _parse_symbol_list(signals.get("nn_priority_symbols", []))
     )
-    infinity_symbols_env = os.environ.get("INFINITY_TRAINING_SYMBOLS", "")
+    infinity_symbols_env = os.environ.get("INFINITY_TRAINING_SYMBOLS")
     infinity_training_symbols = (
         _parse_symbol_list(infinity_symbols_env)
-        if infinity_symbols_env
+        if infinity_symbols_env is not None
         else _parse_symbol_list(infinity_raw.get("training_symbols", []))
     )
     infinity_force_refresh_env = os.environ.get("INFINITY_FORCE_REFRESH")
@@ -476,7 +476,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
 
     groq = GroqConfig(
         api_key=os.environ.get("GROQ_API_KEY", ""),
-        model=os.environ.get("GROQ_MODEL", groq_raw.get("model", "oss-120")),
+        model=os.environ.get("GROQ_MODEL", groq_raw.get("model", "llama-3.3-70b-versatile")),
         api_url=os.environ.get(
             "GROQ_API_URL",
             groq_raw.get("api_url", "https://api.groq.com/openai/v1/chat/completions"),

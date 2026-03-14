@@ -213,6 +213,7 @@ def _build_multiplex_signal(
     candles = snapshot.get("candles", {})
     tf_predictions: Dict[str, Any] = {}
     nn_priority_symbols = {s.upper() for s in cfg.ml.nn_priority_symbols}
+    nn_priority_enabled = bool(symbol and symbol.upper() in nn_priority_symbols)
     nn_priority_signal: Optional[Dict[str, Any]] = None
 
     def _apply_nn_priority() -> Optional[Dict[str, Any]]:
@@ -221,29 +222,37 @@ def _build_multiplex_signal(
             nn_payload["delegated_to"] = "nn_override"
             return nn_payload
         return None
-    if symbol and symbol.upper() in nn_priority_symbols:
-        nn_primary_df = candles.get(cfg.data.primary_interval)
-        if nn_primary_df is not None and not nn_primary_df.empty:
-            try:
-                nn_priority_signal = ensemble.predict(nn_primary_df)
-            except Exception as exc:
-                log.debug("NN priority prediction skipped for %s: %s", symbol, exc)
-
     for tf in trading_tfs:
         df_tf = candles.get(tf)
         if df_tf is None or df_tf.empty:
             continue
         try:
             # Prefer per-timeframe model when available (MTF epoch training).
-            if ensemble.has_timeframe_model(tf):
+            has_tf_model = ensemble.has_timeframe_model(tf)
+            if has_tf_model:
                 pred = ensemble.predict_timeframe(df_tf, tf)
                 pred.setdefault("timeframe", tf)
             else:
                 pred = ensemble.predict(df_tf)
                 pred["timeframe"] = tf
             tf_predictions[tf] = pred
+            if (
+                nn_priority_enabled
+                and tf == cfg.data.primary_interval
+                and not has_tf_model
+                and nn_priority_signal is None
+            ):
+                nn_priority_signal = pred
         except Exception as exc:
             log.debug("Multiplex prediction skipped for %s: %s", tf, exc)
+
+    if nn_priority_enabled and nn_priority_signal is None:
+        nn_primary_df = candles.get(cfg.data.primary_interval)
+        if nn_primary_df is not None and not nn_primary_df.empty:
+            try:
+                nn_priority_signal = ensemble.predict(nn_primary_df)
+            except Exception as exc:
+                log.debug("NN priority prediction skipped for %s: %s", symbol, exc)
 
     if len(tf_predictions) >= 2:
         ml_signal = ensemble.combined_decision(tf_predictions)
@@ -1494,7 +1503,12 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
     if snapshot_override is not None:
         log.info("Cleared DATA_SNAPSHOT_END_MS; using real-time data for pipeline")
 
-    def _record_stage(stage: str, status: str, rc: Optional[int] = None) -> None:
+    def _record_stage(
+        stage: str,
+        status: str,
+        rc: Optional[int] = None,
+        error: Optional[str] = None,
+    ) -> None:
         payload: Dict[str, Any] = {
             "stage": stage,
             "status": status,
@@ -1502,10 +1516,14 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
         }
         if rc is not None:
             payload["exit_code"] = rc
+        if error:
+            payload["error"] = error
         db.set_cache("training_pipeline:progress", payload)
+        error_line = f"- Error: `{error}`\n" if error else ""
         _print_github_summary(
             f"### 🧪 Training Pipeline – {stage}\n\n"
             f"- Status: **{status.upper()}**\n"
+            f"{error_line}"
         )
 
     steps = [
@@ -1516,7 +1534,20 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
     try:
         for name, step in steps:
             _record_stage(name, "running")
-            step_result = step(config_path)
+            try:
+                step_result = step(config_path)
+            except Exception as exc:
+                log.exception("Training pipeline errored during %s stage", name)
+                error_msg = str(exc)
+                _record_stage(name, "failed", 1, error=error_msg)
+                db.record_task_completion(
+                    task_name="training_pipeline",
+                    run_type="training-pipeline",
+                    mode=mode,
+                    status="failed",
+                    metadata={"failed_stage": name, "error": error_msg},
+                )
+                return 1
             if step_result != 0:
                 log.error("Training pipeline failed during %s stage", name)
                 _record_stage(name, "failed", step_result)
@@ -1541,6 +1572,7 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
     finally:
         if snapshot_override is not None:
             os.environ["DATA_SNAPSHOT_END_MS"] = snapshot_override
+        db.close()
 
 
 def run_model_export(config_path: Optional[Path] = None) -> int:
