@@ -75,6 +75,23 @@ class TestConfigModelWeights:
         assert cfg.ml.model_weights["tree_clf"] == 0.17
 
 
+class TestConfigNnPrioritySymbols:
+    def test_nn_priority_symbols_include_eth(self):
+        cfg = load_config()
+        assert "ETH" in cfg.ml.nn_priority_symbols
+
+
+class TestConfigInfinityLoopSymbols:
+    def test_infinity_training_symbols_include_eth(self):
+        cfg = load_config()
+        assert "ETH" in cfg.ml.infinity_training_symbols
+
+    def test_infinity_force_refresh_enabled(self, monkeypatch):
+        monkeypatch.setenv("INFINITY_FORCE_REFRESH", "true")
+        cfg = load_config()
+        assert cfg.ml.infinity_force_refresh is True
+
+
 # ── Gemini orchestrator tests ─────────────────────────────────────────────────
 
 class TestGeminiShortMessage:

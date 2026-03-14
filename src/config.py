@@ -36,8 +36,8 @@ class RiskConfig:
     daily_loss_limit_pct: float = 0.05
     max_open_positions: int = 4
     stop_loss_atr_multiplier: float = 2.0
-    take_profit_atr_multiplier: float = 3.0
-    trailing_stop_pct: float = 0.015
+    take_profit_atr_multiplier: float = 1.5
+    trailing_stop_pct: float = 0.01
 
 
 @dataclass
@@ -114,6 +114,7 @@ class MLConfig:
     nn_override_threshold: float = field(
         default_factory=lambda: float(os.getenv("ML_NN_OVERRIDE_THRESHOLD", "0.65"))
     )
+    nn_priority_symbols: List[str] = field(default_factory=list)
     # Infinity-loop supervised learning
     infinity_loop_enabled: bool = True
     infinity_loop_max_epochs: int = 0         # 0 = infinite
@@ -121,6 +122,8 @@ class MLConfig:
     infinity_hp_adjust_step_threshold: float = 0.02
     infinity_hp_adjust_agreement_step: float = 0.05
     infinity_evaluation_interval: int = 10
+    infinity_training_symbols: List[str] = field(default_factory=list)
+    infinity_force_refresh: bool = False
 
 
 @dataclass
@@ -136,7 +139,7 @@ class GeminiConfig:
 @dataclass
 class GroqConfig:
     api_key: str = ""
-    model: str = "llama-3.3-70b-versatile"
+    model: str = "oss-120"
     api_url: str = "https://api.groq.com/openai/v1/chat/completions"
     temperature: float = 0.1
     max_output_tokens: int = 2048
@@ -245,6 +248,18 @@ def _deep_get(d: dict, *keys, default=None):
     return d if d != {} else default
 
 
+def _parse_symbol_list(raw: Any) -> List[str]:
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        items = [item.strip() for item in raw.split(",") if item.strip()]
+    elif isinstance(raw, (list, tuple, set)):
+        items = [str(item).strip() for item in raw if str(item).strip()]
+    else:
+        return []
+    return [item.upper() for item in items]
+
+
 def load_config(config_path: Optional[Path] = None) -> AppConfig:
     """Load YAML config and apply environment variable overrides."""
     path = config_path or CONFIG_FILE
@@ -309,8 +324,8 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         daily_loss_limit_pct=float(risk_raw.get("daily_loss_limit_pct", 0.05)),
         max_open_positions=int(risk_raw.get("max_open_positions", 4)),
         stop_loss_atr_multiplier=float(risk_raw.get("stop_loss_atr_multiplier", 2.0)),
-        take_profit_atr_multiplier=float(risk_raw.get("take_profit_atr_multiplier", 3.0)),
-        trailing_stop_pct=float(risk_raw.get("trailing_stop_pct", 0.015)),
+        take_profit_atr_multiplier=float(risk_raw.get("take_profit_atr_multiplier", 1.5)),
+        trailing_stop_pct=float(risk_raw.get("trailing_stop_pct", 0.01)),
     )
 
     # ── Position sizing ───────────────────────────────────────
@@ -394,6 +409,26 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         if "weight" in model_cfg:
             model_weights[internal_name] = float(model_cfg["weight"])
     infinity_raw = training.get("infinity_loop", ml_raw.get("infinity_loop", {}))
+    # Empty env vars intentionally clear defaults for symbol lists.
+    nn_priority_env = os.environ.get("NN_PRIORITY_SYMBOLS")
+    nn_priority_symbols = (
+        _parse_symbol_list(nn_priority_env)
+        if nn_priority_env is not None
+        else _parse_symbol_list(signals.get("nn_priority_symbols", []))
+    )
+    infinity_symbols_env = os.environ.get("INFINITY_TRAINING_SYMBOLS")
+    infinity_training_symbols = (
+        _parse_symbol_list(infinity_symbols_env)
+        if infinity_symbols_env is not None
+        else _parse_symbol_list(infinity_raw.get("training_symbols", []))
+    )
+    infinity_force_refresh_env = os.environ.get("INFINITY_FORCE_REFRESH")
+    if infinity_force_refresh_env is None:
+        infinity_force_refresh = bool(infinity_raw.get("force_refresh", False))
+    else:
+        infinity_force_refresh = str(infinity_force_refresh_env).strip().lower() in {
+            "1", "true", "yes", "y", "on",
+        }
     ml = MLConfig(
         long_threshold=float(signals.get("long_threshold", 0.60)),
         short_threshold=float(signals.get("short_threshold", 0.60)),
@@ -415,6 +450,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         nn_override_threshold=float(
             signals.get("nn_override_threshold", 0.65)
         ),
+        nn_priority_symbols=nn_priority_symbols,
         infinity_loop_enabled=bool(infinity_raw.get("enabled", True)),
         infinity_loop_max_epochs=int(infinity_raw.get("max_epochs", 0)),
         infinity_zero_trade_threshold=int(infinity_raw.get("zero_trade_threshold", 0)),
@@ -425,6 +461,8 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             infinity_raw.get("hp_adjust_agreement_step", 0.05)
         ),
         infinity_evaluation_interval=int(infinity_raw.get("evaluation_interval_epochs", 10)),
+        infinity_training_symbols=infinity_training_symbols,
+        infinity_force_refresh=infinity_force_refresh,
     )
 
     # ── Gemini ────────────────────────────────────────────────
@@ -439,7 +477,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
 
     groq = GroqConfig(
         api_key=os.environ.get("GROQ_API_KEY", ""),
-        model=os.environ.get("GROQ_MODEL", groq_raw.get("model", "llama-3.3-70b-versatile")),
+        model=os.environ.get("GROQ_MODEL", groq_raw.get("model", "oss-120")),
         api_url=os.environ.get(
             "GROQ_API_URL",
             groq_raw.get("api_url", "https://api.groq.com/openai/v1/chat/completions"),

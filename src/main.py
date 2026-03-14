@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import sys
 import time
@@ -170,12 +171,72 @@ def _resolve_training_markets(cfg: AppConfig) -> List[MarketConfig]:
     return [market for market in cfg.trading.markets if market.symbol.upper() in allowed]
 
 
+def _resolve_training_program() -> str:
+    """Resolve which training program to use (multi_timeframe|progressive|single)."""
+    raw = os.environ.get("TRAINING_PROGRAM", "").strip().lower()
+    if raw in {"mtf", "multi", "multi_timeframe", "multi-timeframe"}:
+        return "multi_timeframe"
+    if raw in {"progressive", "progression", "single_progression", "single-progression"}:
+        return "progressive"
+    if raw in {"single", "primary", "single_timeframe", "single-timeframe"}:
+        return "single"
+    return "multi_timeframe"
+
+
+def _parse_bool_env(key: str, default: bool = False) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    truthy = {"1", "true", "yes", "y", "on"}
+    falsy = {"0", "false", "no", "n", "off"}
+    if value in truthy:
+        return True
+    if value in falsy:
+        return False
+    log.warning("Invalid boolean value for %s=%s; using default=%s", key, raw, default)
+    return default
+
+
+def _resolve_training_epochs(cfg: AppConfig, *, max_epochs: int = 10) -> int:
+    """Resolve training epochs with a configurable cap.
+
+    Uses the configured training epochs (min 1) and caps them to the
+    MAX_TRAINING_EPOCHS environment variable (min 1; default cap 10). Logs
+    whenever the cap applies to keep long-running training runs from producing
+    excessive output.
+    """
+    epochs = max(1, cfg.ml.training_epochs)
+    max_env = os.environ.get("MAX_TRAINING_EPOCHS")
+    cap_source = "default"
+    if max_env:
+        try:
+            max_epochs = max(1, int(max_env))
+            cap_source = "MAX_TRAINING_EPOCHS"
+        except ValueError:
+            log.warning(
+                "Invalid MAX_TRAINING_EPOCHS=%s; using default cap %d",
+                max_env,
+                max_epochs,
+            )
+    if epochs > max_epochs:
+        log.info(
+            "Capping training epochs from %d to %d (cap source: %s)",
+            epochs,
+            max_epochs,
+            cap_source,
+        )
+        return max_epochs
+    return epochs
+
+
 def _build_multiplex_signal(
     cfg: AppConfig,
     ensemble: Any,
     delegation_agent: Any,
     snapshot: Dict[str, Any],
     prior_regime: str = "unknown",
+    symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generate a multi-timeframe ML signal from snapshot candles.
 
@@ -197,6 +258,7 @@ def _build_multiplex_signal(
         delegation_agent:  ``ModelDelegationAgent`` fallback.
         snapshot:          Market data snapshot dict from ``fetch_all_market_data``.
         prior_regime:      Cached regime label from the previous cycle.
+        symbol:            Optional symbol for NN-priority overrides.
 
     Returns:
         Signal dict with at minimum ``signal``, ``confidence``, ``agreement``,
@@ -210,22 +272,47 @@ def _build_multiplex_signal(
     ]
     candles = snapshot.get("candles", {})
     tf_predictions: Dict[str, Any] = {}
+    symbol_upper = symbol.upper() if symbol else ""
+    nn_priority_symbols = {s.upper() for s in cfg.ml.nn_priority_symbols}
+    nn_priority_signal: Optional[Dict[str, Any]] = None
 
+    def _apply_nn_priority() -> Optional[Dict[str, Any]]:
+        if nn_priority_signal and nn_priority_signal.get("nn_decision"):
+            nn_payload = dict(nn_priority_signal)
+            nn_payload["delegated_to"] = "nn_override"
+            return nn_payload
+        return None
     for tf in trading_tfs:
         df_tf = candles.get(tf)
         if df_tf is None or df_tf.empty:
             continue
         try:
             # Prefer per-timeframe model when available (MTF epoch training).
-            if ensemble.has_timeframe_model(tf):
+            has_tf_model = ensemble.has_timeframe_model(tf)
+            if has_tf_model:
                 pred = ensemble.predict_timeframe(df_tf, tf)
                 pred.setdefault("timeframe", tf)
             else:
                 pred = ensemble.predict(df_tf)
                 pred["timeframe"] = tf
             tf_predictions[tf] = pred
+            should_capture_nn_priority_signal = (
+                symbol_upper in nn_priority_symbols
+                and tf == cfg.data.primary_interval
+                and not has_tf_model
+            )
+            if should_capture_nn_priority_signal:
+                nn_priority_signal = pred
         except Exception as exc:
             log.debug("Multiplex prediction skipped for %s: %s", tf, exc)
+
+    if symbol_upper in nn_priority_symbols and nn_priority_signal is None:
+        nn_primary_df = candles.get(cfg.data.primary_interval)
+        if nn_primary_df is not None and not nn_primary_df.empty:
+            try:
+                nn_priority_signal = ensemble.predict(nn_primary_df)
+            except Exception as exc:
+                log.debug("NN priority prediction skipped for %s: %s", symbol, exc)
 
     if len(tf_predictions) >= 2:
         ml_signal = ensemble.combined_decision(tf_predictions)
@@ -233,10 +320,16 @@ def _build_multiplex_signal(
         if ml_signal.get("agreement", 1.0) < cfg.ml.min_ensemble_agreement:
             ml_signal["signal"] = 0
             ml_signal["confidence"] = ml_signal.get("flat_prob", 1.0)
+        nn_override = _apply_nn_priority()
+        if nn_override:
+            return nn_override
         ml_signal["delegated_to"] = "multiplex"
         return ml_signal
 
     # Fewer than two timeframes – fall back to delegation agent.
+    nn_override = _apply_nn_priority()
+    if nn_override:
+        return nn_override
     primary_df = candles.get(cfg.data.primary_interval)
     if primary_df is not None and not primary_df.empty:
         return delegation_agent.predict(primary_df, regime=prior_regime)
@@ -338,8 +431,9 @@ def _ensure_model_ready(
     needs_initial_train = not loaded
     should_train = is_scheduled_retrain_due or needs_initial_train
     if should_train:
+        training_program = _resolve_training_program()
         action = "Training" if needs_initial_train else "Retraining"
-        log.info("%s model for %s (multi-timeframe) …", action, symbol)
+        log.info("%s model for %s (%s) …", action, symbol, training_program)
 
         # Fetch data for all configured timeframes so the model benefits from
         # the same multi-timeframe context used in dedicated training runs.
@@ -373,15 +467,26 @@ def _ensure_model_ready(
             primary_df = next(iter(tf_dataframes.values()))
 
         try:
-            training_epochs = max(1, cfg.ml.training_epochs)
+            training_epochs = _resolve_training_epochs(cfg)
             reinforcement_alpha = cfg.ml.reinforcement_alpha
-            if training_epochs > 1 and len(tf_dataframes) > 1:
+            if (
+                training_program == "multi_timeframe"
+                and training_epochs > 1
+                and len(tf_dataframes) > 1
+            ):
                 ensemble.train_multi_timeframe_with_progression(
                     tf_dataframes,
                     symbol=symbol,
                     epochs=training_epochs,
                     reinforcement_alpha=reinforcement_alpha,
                     primary_tf=cfg.data.primary_interval,
+                )
+            elif training_program == "progressive" and training_epochs > 1:
+                ensemble.train_with_progression(
+                    primary_df,
+                    symbol=symbol,
+                    epochs=training_epochs,
+                    reinforcement_alpha=reinforcement_alpha,
                 )
             else:
                 ensemble.train(primary_df, symbol=symbol)
@@ -406,7 +511,8 @@ def run_training(config_path: Optional[Path] = None) -> int:
     - Fetches OHLCV data for all five timeframes (1m, 5m, 15m, 1h, 1d).
     - Also fetches index/equity data (GOOGL, AAPL, NVDA, US30, SPX, JPM,
       SPY, NASDAQ) via Yahoo Finance for cross-market training enrichment.
-    - Runs ``training_epochs`` (default 200) progressive epochs per symbol.
+    - Runs ``training_epochs`` (config default 200, but capped at
+      MAX_TRAINING_EPOCHS with a default cap of 10) progressive epochs per symbol.
     - Applies reinforcement-learning weight updates after each epoch.
     - Displays tqdm progress bars for the training session, each symbol,
       and each epoch's timeframe loop.
@@ -418,9 +524,10 @@ def run_training(config_path: Optional[Path] = None) -> int:
     db = _build_db_manager(cfg)
     log.setLevel(cfg.system.log_level)
 
-    training_epochs = max(1, cfg.ml.training_epochs)
+    training_epochs = _resolve_training_epochs(cfg)
     reinforcement_alpha = cfg.ml.reinforcement_alpha
-    force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
+    training_program = _resolve_training_program()
+    force_retrain = _parse_bool_env("FORCE_RETRAIN")
 
     enabled_markets = [
         m for m in _resolve_training_markets(cfg) if m.enabled
@@ -457,6 +564,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
         "=== TRAINING SESSION | %d epochs | %d crypto + %d index symbols ===",
         training_epochs, len(enabled_markets), len(index_dfs),
     )
+    log.info("Training program: %s", training_program)
 
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
@@ -553,7 +661,11 @@ def run_training(config_path: Optional[Path] = None) -> int:
             primary_df = next(iter(tf_dataframes.values()))
 
         # ── Train ─────────────────────────────────────────────────────────
-        if training_epochs > 1:
+        if (
+            training_program == "multi_timeframe"
+            and training_epochs > 1
+            and len(tf_dataframes) > 1
+        ):
             mtf_results = ensemble.train_multi_timeframe_with_progression(
                 tf_dataframes,
                 symbol=symbol,
@@ -565,6 +677,17 @@ def run_training(config_path: Optional[Path] = None) -> int:
                 continue
             epoch_scores[symbol] = mtf_results
             results[symbol] = mtf_results[-1]["combined_scores"]
+        elif training_program == "progressive" and training_epochs > 1:
+            prog_results = ensemble.train_with_progression(
+                primary_df,
+                symbol=symbol,
+                epochs=training_epochs,
+                reinforcement_alpha=reinforcement_alpha,
+            )
+            if not prog_results:
+                continue
+            epoch_scores[symbol] = prog_results
+            results[symbol] = prog_results[-1]["scores"]
         else:
             scores = ensemble.train(primary_df, symbol=symbol)
             results[symbol] = scores
@@ -578,6 +701,7 @@ def run_training(config_path: Optional[Path] = None) -> int:
     summary = (
         "## 🤖 Model Training Results\n\n"
         f"**Epochs:** {training_epochs} | "
+        f"**Program:** {training_program} | "
         f"**Timeframes:** {', '.join(all_timeframes)}\n\n"
         "| Symbol | NN (primary) | XGB | GB | RF | Linear |\n"
         "|---|---|---|---|---|---|\n"
@@ -650,12 +774,41 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
         except ValueError:
             pass
 
-    max_epochs = cfg.ml.infinity_loop_max_epochs  # 0 = infinite
-    training_epochs = max(1, cfg.ml.training_epochs)
-    reinforcement_alpha = cfg.ml.reinforcement_alpha
-    force_retrain = os.environ.get("FORCE_RETRAIN", "").lower() == "true"
+    eval_interval_env = os.environ.get("INFINITY_EVALUATION_INTERVAL")
+    if eval_interval_env:
+        try:
+            cfg.ml.infinity_evaluation_interval = int(eval_interval_env)
+        except ValueError:
+            log.warning("Invalid INFINITY_EVALUATION_INTERVAL=%s; using config value", eval_interval_env)
 
-    enabled_markets = [m for m in _resolve_training_markets(cfg) if m.enabled]
+    exit_on_pass = _parse_bool_env("INFINITY_EXIT_ON_PASS", default=True)
+
+    max_epochs = cfg.ml.infinity_loop_max_epochs  # 0 = infinite
+    training_epochs = _resolve_training_epochs(cfg)
+    reinforcement_alpha = cfg.ml.reinforcement_alpha
+    training_program = _resolve_training_program()
+    force_retrain = _parse_bool_env("FORCE_RETRAIN")
+    should_refresh_dataset = force_retrain or cfg.ml.infinity_force_refresh
+    payload_probe = _parse_bool_env("INFINITY_PAYLOAD_PROBE")
+    infinity_symbols_env = os.environ.get("INFINITY_TRAINING_SYMBOLS")
+    if infinity_symbols_env and infinity_symbols_env.strip():
+        allowed = {sym.upper() for sym in cfg.ml.infinity_training_symbols}
+        if allowed:
+            enabled_markets = [
+                m for m in cfg.trading.markets if m.enabled and m.symbol.upper() in allowed
+            ]
+        else:
+            log.warning("INFINITY_TRAINING_SYMBOLS set but empty after parsing; using defaults")
+            enabled_markets = [m for m in _resolve_training_markets(cfg) if m.enabled]
+    elif os.environ.get("TRAINING_SYMBOLS"):
+        enabled_markets = [m for m in _resolve_training_markets(cfg) if m.enabled]
+    elif cfg.ml.infinity_training_symbols:
+        allowed = {sym.upper() for sym in cfg.ml.infinity_training_symbols}
+        enabled_markets = [
+            m for m in cfg.trading.markets if m.enabled and m.symbol.upper() in allowed
+        ]
+    else:
+        enabled_markets = [m for m in _resolve_training_markets(cfg) if m.enabled]
     index_fetcher = IndexDataFetcher(cfg)
     fetcher = HyperliquidDataFetcher(cfg)
     ensemble = QuantumEnsemble(cfg)
@@ -685,11 +838,27 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
         max_epochs or "∞",
         len(enabled_markets),
     )
+    log.info("Infinity training program: %s", training_program)
+
+    if payload_probe:
+        try:
+            probe_results = ai_orchestrator.orchestration_probe()
+            db.set_cache("infinity_loop:payload_probe", probe_results)
+            groq_results = [r for r in probe_results if r.get("provider") == "Groq"]
+            if groq_results:
+                _print_github_summary(
+                    "## 🧪 Groq Payload Probe\n\n"
+                    f"- Results: {len(groq_results)} response(s) recorded\n"
+                )
+        except Exception as exc:
+            log.warning("Groq payload probe failed: %s", exc)
 
     global_epoch = 0
+    exit_reason: Optional[str] = None
     while True:
         if max_epochs > 0 and global_epoch >= max_epochs:
             log.info("Infinity loop reached max_epochs=%d. Stopping.", max_epochs)
+            exit_reason = "max_epochs"
             break
 
         global_epoch += 1
@@ -722,6 +891,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 log.warning("Index training failed for %s: %s", idx_sym, exc)
 
         # ── Train crypto models ───────────────────────────────────────────
+        trained_symbols: List[str] = []
         for market in enabled_markets:
             symbol = market.symbol
             tf_dataframes: Dict[str, Any] = {}
@@ -729,14 +899,18 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 df_tf = dataset_mgr.get_or_fetch_dataset(
                     fetcher, symbol, tf,
                     lookback_candles=cfg.data.training_lookback_candles,
-                    force_refresh=force_retrain,
+                    force_refresh=should_refresh_dataset,
                 )
                 if not df_tf.empty:
                     tf_dataframes[tf] = df_tf
             if not tf_dataframes:
                 continue
             try:
-                if training_epochs > 1:
+                if (
+                    training_program == "multi_timeframe"
+                    and training_epochs > 1
+                    and len(tf_dataframes) > 1
+                ):
                     ensemble.train_multi_timeframe_with_progression(
                         tf_dataframes,
                         symbol=symbol,
@@ -744,16 +918,33 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                         reinforcement_alpha=reinforcement_alpha,
                         primary_tf=cfg.data.primary_interval,
                     )
+                elif training_program == "progressive" and training_epochs > 1:
+                    primary_df = tf_dataframes.get(cfg.data.primary_interval) or next(
+                        iter(tf_dataframes.values())
+                    )
+                    ensemble.train_with_progression(
+                        primary_df,
+                        symbol=symbol,
+                        epochs=training_epochs,
+                        reinforcement_alpha=reinforcement_alpha,
+                    )
                 else:
                     primary_df = tf_dataframes.get(cfg.data.primary_interval) or next(
                         iter(tf_dataframes.values())
                     )
                     ensemble.train(primary_df, symbol=symbol)
+                trained_symbols.append(symbol)
             except Exception as exc:
                 log.warning("Training failed for %s: %s", symbol, exc)
+        if trained_symbols:
+            _record_training_time(db, trained_symbols)
 
         # ── Periodic evaluation & hyperparameter adjustment ───────────────
-        if supervised.should_evaluate():
+        # Force an evaluation after the first epoch (supervised.epoch == 1 after
+        # the increment_epoch call above) when exit-on-pass is enabled so training
+        # can exit immediately if initial results satisfy thresholds.
+        should_eval = supervised.should_evaluate() or (exit_on_pass and supervised.epoch == 1)
+        if should_eval:
             trade_history = [asdict(t) for t in broker.trade_history]
             last_cycle = db.get_cache("signal:paper:last_cycle")
             cached_gemini_time = 0.0
@@ -788,6 +979,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 metrics_dict,
                 ai_callback=_ai_callback,
             )
+            passes = evaluator.passes_thresholds(metrics)
 
             # Log stab/pierce alerts
             if metrics.stab_alert or metrics.pierce_alert:
@@ -813,6 +1005,7 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                     "stab_alert": metrics.stab_alert,
                     "pierce_alert": metrics.pierce_alert,
                     "adjustments": len(adjustments),
+                    "pass": passes,
                 },
             )
             _print_github_summary(
@@ -822,15 +1015,26 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
                 f"WR: {fmt_pct(metrics.win_rate)}\n"
                 f"- Adjustments: {len(adjustments)}\n"
                 f"- Stab: {'⚠️' if metrics.stab_alert else '✅'} | "
-                f"Pierce: {'⚠️' if metrics.pierce_alert else '✅'}\n"
+                f"Pierce: {'⚠️' if metrics.pierce_alert else '✅'} | "
+                f"Thresholds: {'✅' if passes else '❌'}\n"
             )
+            if exit_on_pass and passes:
+                log.info(
+                    "Infinity loop thresholds satisfied (epoch=%d). Exiting loop.",
+                    global_epoch,
+                )
+                exit_reason = "thresholds_passed"
+                break
 
+    # Fallback when exit_reason was not set by normal termination paths.
+    if exit_reason is None:
+        exit_reason = "interrupted"
     db.record_task_completion(
         task_name="infinity_training",
         run_type="infinity-train",
         mode=cfg.trading.mode,
         status="success",
-        metadata={"final_epoch": global_epoch},
+        metadata={"final_epoch": global_epoch, "exit_reason": exit_reason},
     )
     return 0
 
@@ -897,7 +1101,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         # available (e.g. first run, stub data, or missing intervals).
         prior_regime = cached_regimes.get(symbol, "unknown")
         ml_signal = _build_multiplex_signal(
-            cfg, ensemble, delegation_agent, snapshot, prior_regime
+            cfg, ensemble, delegation_agent, snapshot, prior_regime, symbol=symbol
         )
         log.info(
             "%s ML signal: %s (conf=%.3f, agree=%.2f, nn_primary=%s, delegated_to=%s)",
@@ -1126,7 +1330,7 @@ def run_live_signal(config_path: Optional[Path] = None) -> int:
         prior_regime = cached_regimes.get(symbol, "unknown")
         # Multi-timeframe signal: combines 1m / 5m / 15m / 1h predictions.
         ml_signal = _build_multiplex_signal(
-            cfg, ensemble, delegation_agent, snapshot, prior_regime
+            cfg, ensemble, delegation_agent, snapshot, prior_regime, symbol=symbol
         )
         gemini_analysis = ai_orchestrator.analyse_market_context(symbol, ml_signal, snapshot)
         validated_signal = gemini_analysis.get("validated_signal", ml_signal["signal"])
@@ -1432,6 +1636,101 @@ def run_full_cycle(config_path: Optional[Path] = None) -> int:
     return 0
 
 
+def run_training_pipeline(config_path: Optional[Path] = None) -> int:
+    """Run the training pipeline in separate real-time stages.
+
+    Executes training → evaluation → export sequentially while recording
+    per-stage progress in the cache for monitoring.
+    """
+    cfg = load_config(config_path)
+    db = _build_db_manager(cfg)
+    log.setLevel(cfg.system.log_level)
+    mode = os.environ.get("TRADING_MODE", cfg.trading.mode)
+
+    log.info("=== TRAINING PIPELINE ===")
+    snapshot_override = os.environ.pop("DATA_SNAPSHOT_END_MS", None)
+    if snapshot_override is not None:
+        log.info("Cleared DATA_SNAPSHOT_END_MS; using real-time data for pipeline")
+
+    def _escape_markdown_error(error: str) -> str:
+        """Remove newlines and escape markdown special characters for summary output."""
+        cleaned = error.replace("\\", "\\\\")
+        cleaned = cleaned.replace("\n", " ").strip()
+        return re.sub(r"([-`*_\[\]()#+!|<>])", r"\\\1", cleaned)
+
+    def _record_stage(
+        stage: str,
+        status: str,
+        rc: Optional[int] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "stage": stage,
+            "status": status,
+            "timestamp": utc_now().isoformat(),
+        }
+        if rc is not None:
+            payload["exit_code"] = rc
+        safe_error = ""
+        if error:
+            safe_error = _escape_markdown_error(error)
+            payload["error"] = safe_error
+        db.set_cache("training_pipeline:progress", payload)
+        summary = (
+            f"### 🧪 Training Pipeline – {stage}\n\n"
+            f"- Status: **{status.upper()}**\n"
+        )
+        if safe_error:
+            summary += f"- Error: {safe_error}\n"
+        _print_github_summary(summary)
+
+    def _record_failure(stage: str, rc: int, error: Optional[str] = None) -> int:
+        sanitized_error = _escape_markdown_error(error) if error else None
+        _record_stage(stage, "failed", rc, error=error)
+        metadata = {"failed_stage": stage}
+        if sanitized_error:
+            metadata["error"] = sanitized_error
+        db.record_task_completion(
+            task_name="training_pipeline",
+            run_type="training-pipeline",
+            mode=mode,
+            status="failed",
+            metadata=metadata,
+        )
+        return rc
+
+    steps = [
+        ("training", run_training),
+        ("evaluate", run_evaluation),
+        ("export", run_model_export),
+    ]
+    try:
+        for name, step in steps:
+            _record_stage(name, "running")
+            try:
+                step_result = step(config_path)
+            except Exception as exc:
+                log.exception("Training pipeline errored during %s stage", name)
+                return _record_failure(name, 1, error=str(exc))
+            if step_result != 0:
+                log.error("Training pipeline failed during %s stage", name)
+                return _record_failure(name, step_result)
+            _record_stage(name, "completed", step_result)
+
+        db.record_task_completion(
+            task_name="training_pipeline",
+            run_type="training-pipeline",
+            mode=mode,
+            status="success",
+            metadata={"stages": [s for s, _ in steps]},
+        )
+        return 0
+    finally:
+        if snapshot_override is not None:
+            os.environ["DATA_SNAPSHOT_END_MS"] = snapshot_override
+        db.close()
+
+
 def run_model_export(config_path: Optional[Path] = None) -> int:
     """Export trained sklearn models (GB, RF, Linear) to ONNX format and
     save per-symbol OHLCV training data as CSV files.
@@ -1612,8 +1911,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Quantum Trading System")
     parser.add_argument(
         "--run-type",
-        choices=["training", "signal", "evaluate", "train-models", "infinity-train",
-                 "export-models", "full-cycle", "health-check"],
+        choices=[
+            "training", "signal", "evaluate", "train-models", "infinity-train",
+            "export-models", "full-cycle", "training-pipeline", "health-check",
+        ],
         required=True,
         help="What to run",
     )
@@ -1651,6 +1952,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return run_model_export(cfg_path)
     elif args.run_type == "full-cycle":
         return run_full_cycle(cfg_path)
+    elif args.run_type == "training-pipeline":
+        return run_training_pipeline(cfg_path)
     elif args.run_type == "health-check":
         return run_health_check(cfg_path)
     else:
