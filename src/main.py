@@ -1508,8 +1508,7 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
     def _sanitize_error(error: str) -> str:
         """Escape markdown special characters for summary output."""
         cleaned = error.replace("\n", " ").strip()
-        pattern = f"([{re.escape('`*_[]()#+!|<>-')}])"
-        return re.sub(pattern, r"\\\1", cleaned)
+        return re.sub(r"([`*_\[\]()#+!|<>\-])", r"\\\1", cleaned)
 
     def _record_stage(
         stage: str,
@@ -1529,13 +1528,12 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
             safe_error = _sanitize_error(error)
             payload["error"] = safe_error
         db.set_cache("training_pipeline:progress", payload)
-        error_line = f"- Error: {safe_error}" if safe_error else ""
         summary = (
             f"### 🧪 Training Pipeline – {stage}\n\n"
             f"- Status: **{status.upper()}**\n"
         )
-        if error_line:
-            summary += f"{error_line}\n"
+        if safe_error:
+            summary += f"- Error: {safe_error}\n"
         _print_github_summary(summary)
 
     def _record_failure(stage: str, rc: int, error: Optional[str] = None) -> int:
