@@ -89,7 +89,8 @@ Key parameters in [`config/trading_config.yaml`](config/trading_config.yaml):
 | `INFINITY_EVALUATION_INTERVAL` | (config) | Override `ml.infinity_loop.evaluation_interval_epochs` |
 | `INFINITY_PAYLOAD_PROBE` | `false` | Run a Groq payload inference probe at the start of infinity training |
 
-Training epochs are capped at 10 per symbol to limit log volume during long runs.
+By default, training epochs are capped at 10 per symbol (configurable via
+`MAX_TRAINING_EPOCHS`) to limit log volume during long runs.
 
 ---
 

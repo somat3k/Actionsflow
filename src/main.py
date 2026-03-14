@@ -493,8 +493,8 @@ def run_training(config_path: Optional[Path] = None) -> int:
     - Fetches OHLCV data for all five timeframes (1m, 5m, 15m, 1h, 1d).
     - Also fetches index/equity data (GOOGL, AAPL, NVDA, US30, SPX, JPM,
       SPY, NASDAQ) via Yahoo Finance for cross-market training enrichment.
-    - Runs ``training_epochs`` (default 200, capped at MAX_TRAINING_EPOCHS=10)
-      progressive epochs per symbol.
+    - Runs ``training_epochs`` (default 200, capped at MAX_TRAINING_EPOCHS
+      with a default cap of 10) progressive epochs per symbol.
     - Applies reinforcement-learning weight updates after each epoch.
     - Displays tqdm progress bars for the training session, each symbol,
       and each epoch's timeframe loop.
