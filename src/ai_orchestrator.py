@@ -1,6 +1,6 @@
 """
-Multi-provider AI orchestrator for Gemini, OpenAI, OpenRouter, and Groq.
-Gemini participates as a provider when configured and is also the final
+Multi-provider AI orchestrator for Groq (Agent), OpenRouter, and OpenAI.
+AgentOrchestrator (Groq-backed) is the primary provider and also the final
 fallback/heuristic path when other providers are unavailable or return no response.
 """
 
@@ -17,6 +17,8 @@ import requests
 
 from src.config import AppConfig
 from src.gemini_orchestrator import GeminiOrchestrator, _SYSTEM_PROMPT, build_market_context_prompt
+from src.agent_orchestrator import AgentOrchestrator
+from src.gemini_orchestrator import _SYSTEM_PROMPT, build_market_context_prompt
 from src.utils import get_logger
 
 log = get_logger(__name__)
@@ -134,17 +136,17 @@ class OpenAICompatibleOrchestrator:
         return None
 
 
-class GeminiProvider:
-    """Wrapper to expose Gemini as a provider when the API is available."""
+class AgentProvider:
+    """Wrapper to expose AgentOrchestrator as a provider."""
 
-    name = "Gemini"
+    name = "Agent"
 
-    def __init__(self, orchestrator: GeminiOrchestrator) -> None:
+    def __init__(self, orchestrator: AgentOrchestrator) -> None:
         self.orchestrator = orchestrator
 
     @property
     def available(self) -> bool:
-        return getattr(self.orchestrator, "_model", None) is not None
+        return self.orchestrator.available
 
     def analyse_market_context(self, *args, **kwargs):
         return self.orchestrator.analyse_market_context(*args, **kwargs)
@@ -157,18 +159,18 @@ class GeminiProvider:
 
 
 class MultiAIOrchestrator:
-    """Orchestrates Groq (primary), Gemini, OpenRouter, and OpenAI providers with fallback.
+    """Orchestrates Groq (primary), Agent (Groq), OpenRouter, and OpenAI providers with fallback.
 
     Groq is the primary/default provider for AI inference due to its low-latency
     API.  When Groq responds successfully the result is returned immediately
     without querying other providers, keeping decision-making latency minimal.
     Other providers are queried only when Groq is unavailable or returns no
-    response, in the order: Gemini → OpenRouter → OpenAI.
+    response, in the order: Agent → OpenRouter → OpenAI.
     """
 
     def __init__(self, config: AppConfig) -> None:
         self.cfg = config
-        self._fallback = GeminiOrchestrator(config)
+        self._fallback = AgentOrchestrator(config)
         self._providers = self._build_providers(config)
         # Name of the primary fast-path provider; responses from this provider
         # are used immediately without waiting for the full provider list.
@@ -229,9 +231,9 @@ class MultiAIOrchestrator:
 
         Provider priority:
           1. Groq   – primary; low-latency inference, used as fast-path
-          2. Gemini – fallback when Groq is unavailable
+          2. Agent  – secondary; AgentOrchestrator (Groq-backed) with heuristic fallback
           3. OpenRouter – additional fallback
-          4. OpenAI     – final fallback before heuristic Gemini path
+          4. OpenAI     – final fallback before heuristic Agent path
         """
         providers: List[Any] = []
 
@@ -240,9 +242,9 @@ class MultiAIOrchestrator:
         if groq_provider.available:
             providers.append(groq_provider)
 
-        gemini_provider = GeminiProvider(self._fallback)
-        if gemini_provider.available:
-            providers.append(gemini_provider)
+        agent_provider = AgentProvider(self._fallback)
+        if agent_provider.available:
+            providers.append(agent_provider)
 
         openrouter_provider = OpenAICompatibleOrchestrator("OpenRouter", config, config.openrouter)
         if openrouter_provider.available:
@@ -267,7 +269,7 @@ class MultiAIOrchestrator:
         into the returned list (used by the merge functions to combine signals).
 
         All provider objects expose a ``name`` attribute (``OpenAICompatibleOrchestrator``
-        sets it in ``__init__``; ``GeminiProvider`` defines it as a class attribute).
+        sets it in ``__init__``; ``AgentProvider`` defines it as a class attribute).
         """
         responses: List[Dict[str, Any]] = []
         for provider in self._providers:
@@ -352,7 +354,7 @@ class MultiAIOrchestrator:
 
         # Report unconfigured providers as skipped.
         _all_provider_keys = [
-            ("Gemini", self._fallback.gcfg.api_key),
+            ("Agent", self.cfg.groq.api_key),
             ("OpenRouter", self.cfg.openrouter.api_key),
             ("OpenAI", self.cfg.openai.api_key),
             ("Groq", self.cfg.groq.api_key),
@@ -458,10 +460,10 @@ class MultiAIOrchestrator:
         all_provider_names: set = set()
 
         providers_to_probe: List[Any] = list(self._providers)
-        # Always probe the fallback (Gemini heuristic) so it appears in results
+        # Always probe the fallback (Agent heuristic) so it appears in results
         # even when no primary providers are configured.
         if not providers_to_probe:
-            providers_to_probe = [GeminiProvider(self._fallback)]
+            providers_to_probe = [AgentProvider(self._fallback)]
 
         for provider in providers_to_probe:
             name: str = getattr(provider, "name", type(provider).__name__)

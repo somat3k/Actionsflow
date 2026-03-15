@@ -65,7 +65,7 @@ def _make_webhook_entry(symbol: str = "EURUSD") -> dict:
 
 def _build_state(monkeypatch, ensemble_cls) -> bridge.BridgeState:
     monkeypatch.setattr(bridge, "QuantumEnsemble", ensemble_cls)
-    monkeypatch.setattr(bridge, "GeminiOrchestrator", None)
+    monkeypatch.setattr(bridge, "AgentOrchestrator", None)
     monkeypatch.setattr(bridge, "add_all_features", _dummy_features)
     return bridge.BridgeState()
 

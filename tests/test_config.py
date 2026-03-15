@@ -64,3 +64,16 @@ def test_ml_nn_override_threshold_env_var_takes_precedence(tmp_path, monkeypatch
     assert isinstance(cfg.ml.nn_override_threshold, float)
     assert cfg.ml.nn_override_threshold != 0.75, "env var did not override YAML value"
     assert cfg.ml.nn_override_threshold == 0.55
+
+    # Ensure the env var is not set before testing the YAML-only behavior.
+    monkeypatch.delenv("ML_NN_OVERRIDE_THRESHOLD", raising=False)
+
+    # Without env var, the YAML value is used.
+    cfg_yaml = load_config(cfg_file)
+    assert cfg_yaml.ml.nn_override_threshold == pytest.approx(0.75)
+
+    # With env var set, it takes precedence over the YAML value.
+    monkeypatch.setenv("ML_NN_OVERRIDE_THRESHOLD", "0.42")
+    cfg_env = load_config(cfg_file)
+    assert cfg_env.ml.nn_override_threshold == pytest.approx(0.42)
+    assert isinstance(cfg_env.ml.nn_override_threshold, float)
