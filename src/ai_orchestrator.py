@@ -1,6 +1,6 @@
 """
-Multi-provider AI orchestrator for Gemini, OpenAI, OpenRouter, and Groq.
-Gemini participates as a provider when configured and is also the final
+Multi-provider AI orchestrator for Groq (Agent), OpenRouter, and OpenAI.
+AgentOrchestrator (Groq-backed) is the primary provider and also the final
 fallback/heuristic path when other providers are unavailable or return no response.
 """
 
@@ -16,7 +16,8 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from src.config import AppConfig
-from src.gemini_orchestrator import GeminiOrchestrator, _SYSTEM_PROMPT
+from src.agent_orchestrator import AgentOrchestrator
+from src.gemini_orchestrator import _SYSTEM_PROMPT, build_market_context_prompt
 from src.utils import get_logger
 
 log = get_logger(__name__)
@@ -134,17 +135,17 @@ class OpenAICompatibleOrchestrator:
         return None
 
 
-class GeminiProvider:
-    """Wrapper to expose Gemini as a provider when the API is available."""
+class AgentProvider:
+    """Wrapper to expose AgentOrchestrator as a provider."""
 
-    name = "Gemini"
+    name = "Agent"
 
-    def __init__(self, orchestrator: GeminiOrchestrator) -> None:
+    def __init__(self, orchestrator: AgentOrchestrator) -> None:
         self.orchestrator = orchestrator
 
     @property
     def available(self) -> bool:
-        return getattr(self.orchestrator, "_model", None) is not None
+        return self.orchestrator.available
 
     def analyse_market_context(self, *args, **kwargs):
         return self.orchestrator.analyse_market_context(*args, **kwargs)
@@ -157,18 +158,18 @@ class GeminiProvider:
 
 
 class MultiAIOrchestrator:
-    """Orchestrates Groq (primary), Gemini, OpenRouter, and OpenAI providers with fallback.
+    """Orchestrates Groq (primary), Agent (Groq), OpenRouter, and OpenAI providers with fallback.
 
     Groq is the primary/default provider for AI inference due to its low-latency
     API.  When Groq responds successfully the result is returned immediately
     without querying other providers, keeping decision-making latency minimal.
     Other providers are queried only when Groq is unavailable or returns no
-    response, in the order: Gemini → OpenRouter → OpenAI.
+    response, in the order: Agent → OpenRouter → OpenAI.
     """
 
     def __init__(self, config: AppConfig) -> None:
         self.cfg = config
-        self._fallback = GeminiOrchestrator(config)
+        self._fallback = AgentOrchestrator(config)
         self._providers = self._build_providers(config)
         # Name of the primary fast-path provider; responses from this provider
         # are used immediately without waiting for the full provider list.
@@ -229,9 +230,9 @@ class MultiAIOrchestrator:
 
         Provider priority:
           1. Groq   – primary; low-latency inference, used as fast-path
-          2. Gemini – fallback when Groq is unavailable
+          2. Agent  – secondary; AgentOrchestrator (Groq-backed) with heuristic fallback
           3. OpenRouter – additional fallback
-          4. OpenAI     – final fallback before heuristic Gemini path
+          4. OpenAI     – final fallback before heuristic Agent path
         """
         providers: List[Any] = []
 
@@ -240,9 +241,9 @@ class MultiAIOrchestrator:
         if groq_provider.available:
             providers.append(groq_provider)
 
-        gemini_provider = GeminiProvider(self._fallback)
-        if gemini_provider.available:
-            providers.append(gemini_provider)
+        agent_provider = AgentProvider(self._fallback)
+        if agent_provider.available:
+            providers.append(agent_provider)
 
         openrouter_provider = OpenAICompatibleOrchestrator("OpenRouter", config, config.openrouter)
         if openrouter_provider.available:
@@ -267,7 +268,7 @@ class MultiAIOrchestrator:
         into the returned list (used by the merge functions to combine signals).
 
         All provider objects expose a ``name`` attribute (``OpenAICompatibleOrchestrator``
-        sets it in ``__init__``; ``GeminiProvider`` defines it as a class attribute).
+        sets it in ``__init__``; ``AgentProvider`` defines it as a class attribute).
         """
         responses: List[Dict[str, Any]] = []
         for provider in self._providers:
@@ -352,7 +353,7 @@ class MultiAIOrchestrator:
 
         # Report unconfigured providers as skipped.
         _all_provider_keys = [
-            ("Gemini", self._fallback.gcfg.api_key),
+            ("Agent", self.cfg.groq.api_key),
             ("OpenRouter", self.cfg.openrouter.api_key),
             ("OpenAI", self.cfg.openai.api_key),
             ("Groq", self.cfg.groq.api_key),
@@ -458,10 +459,10 @@ class MultiAIOrchestrator:
         all_provider_names: set = set()
 
         providers_to_probe: List[Any] = list(self._providers)
-        # Always probe the fallback (Gemini heuristic) so it appears in results
+        # Always probe the fallback (Agent heuristic) so it appears in results
         # even when no primary providers are configured.
         if not providers_to_probe:
-            providers_to_probe = [GeminiProvider(self._fallback)]
+            providers_to_probe = [AgentProvider(self._fallback)]
 
         for provider in providers_to_probe:
             name: str = getattr(provider, "name", type(provider).__name__)
@@ -619,42 +620,7 @@ def _build_market_context_prompt(
     ml_signal: Dict[str, Any],
     snapshot: Dict[str, Any],
 ) -> str:
-    funding = snapshot.get("funding", {})
-    order_book = snapshot.get("order_book", {})
-    signal_map = {0: "FLAT", 1: "LONG", 2: "SHORT"}
-    return textwrap.dedent(f"""
-        Analyse the following market context for {symbol} and validate the ML signal.
-
-        ML Signal: {signal_map.get(ml_signal.get('signal', 0), 'FLAT')}
-        ML Confidence: {ml_signal.get('confidence', 0):.4f}
-        Ensemble Agreement: {ml_signal.get('agreement', 0):.4f}
-        Long Probability: {ml_signal.get('long_prob', 0):.4f}
-        Short Probability: {ml_signal.get('short_prob', 0):.4f}
-
-        Market Data:
-        - Funding Rate: {funding.get('funding_rate', 0) * 100:.4f}% (raw decimal × 100)
-        - Open Interest: {funding.get('open_interest', 0):.2f}
-        - Mark Price: {funding.get('mark_price', 0):.4f}
-        - Order Book Imbalance: {order_book.get('order_book_imbalance', 0):.4f} (range -1 to +1; positive = buy-heavy)
-        - Bid/Ask Spread (bps): {order_book.get('bid_ask_spread_bps', 0):.2f}
-        - Trade Flow Imbalance: {snapshot.get('trade_flow_imbalance', 0):.4f} (range -1 to +1; positive = buyer-driven)
-
-        Lean toward preserving the ML signal direction. Only set validated_signal
-        to 0 (FLAT) when the market data provides strong, clear evidence that
-        contradicts the ML signal (e.g., funding rate > 0.1% or < -0.1%, or
-        abs(Order Book Imbalance) > 0.5 in the direction opposing the ML signal,
-        or abs(Trade Flow Imbalance) > 0.5 opposing the ML signal). When uncertain,
-        keep the ML signal as-is.
-
-        Respond with JSON only:
-        {{
-            "validated_signal": <0|1|2>,
-            "confidence_adjustment": <float between -0.2 and 0.2>,
-            "regime": "<trending_up|trending_down|ranging|volatile|consolidating>",
-            "reasoning": "<brief explanation>",
-            "risk_flags": ["<flag1>", ...]
-        }}
-    """).strip()
+    return build_market_context_prompt(symbol, ml_signal, snapshot)
 
 
 def _build_leverage_prompt(

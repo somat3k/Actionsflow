@@ -23,12 +23,12 @@ from src.risk_manager import PositionRequest, RiskManager
 from src.utils import add_all_features
 
 try:
-    from src.gemini_orchestrator import GeminiOrchestrator
+    from src.agent_orchestrator import AgentOrchestrator
 except (ImportError, NameError) as exc:
-    GeminiOrchestrator = None
-    GEMINI_IMPORT_ERROR = exc
+    AgentOrchestrator = None
+    AGENT_IMPORT_ERROR = exc
 else:
-    GEMINI_IMPORT_ERROR = None
+    AGENT_IMPORT_ERROR = None
 
 log = logging.getLogger("gemini-bridge")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -51,7 +51,7 @@ class BridgeState:
         config_path = os.getenv("TRADING_CONFIG_PATH")
         self.cfg = load_config(Path(config_path)) if config_path else load_config()
         self.ensemble = QuantumEnsemble(self.cfg)
-        self.gemini = GeminiOrchestrator(self.cfg) if GeminiOrchestrator else None
+        self.agent = AgentOrchestrator(self.cfg) if AgentOrchestrator else None
         self.risk_mgr = RiskManager(self.cfg)
         self.loaded_symbols: set[str] = set()
         self._lock = threading.Lock()
@@ -130,15 +130,15 @@ class BridgeState:
 
             ml_signal = self.ensemble.predict(features)
             ml_confidence = float(ml_signal.get("confidence", 0.0))
-            gemini_result = self._analyse_with_gemini(symbol, ml_signal, market_snapshot)
-            confidence_adjustment = float(gemini_result.get("confidence_adjustment", 0.0))
+            agent_result = self._analyse_with_agent(symbol, ml_signal, market_snapshot)
+            confidence_adjustment = float(agent_result.get("confidence_adjustment", 0.0))
             blended_confidence = max(0.0, min(1.0, ml_confidence + confidence_adjustment))
-            final_signal = int(gemini_result.get("validated_signal", ml_signal.get("signal", 0)))
+            final_signal = int(agent_result.get("validated_signal", ml_signal.get("signal", 0)))
 
             lev_rec = self._recommend_leverage(
                 symbol,
                 ml_confidence,
-                gemini_result.get("regime", "unknown"),
+                agent_result.get("regime", "unknown"),
                 current_leverage,
                 perf,
             )
@@ -174,12 +174,12 @@ class BridgeState:
             "symbol": symbol,
             "signal": final_signal,
             "confidence": blended_confidence,
-            "regime": gemini_result.get("regime", "unknown"),
+            "regime": agent_result.get("regime", "unknown"),
             "model": {
                 "signal": ml_signal.get("signal", 0),
                 "confidence": ml_signal.get("confidence", 0.0),
             },
-            "gemini": gemini_result,
+            "agent": agent_result,
             "leverage": {
                 "current": current_leverage,
                 "recommended": lev_rec.get("recommended_leverage", current_leverage),
@@ -220,14 +220,14 @@ class BridgeState:
             "results": results,
         }
 
-    def _analyse_with_gemini(
+    def _analyse_with_agent(
         self, symbol: str, ml_signal: Dict[str, Any], market_snapshot: Dict[str, Any]
     ) -> Dict[str, Any]:
-        if self.gemini:
-            return self.gemini.analyse_market_context(symbol, ml_signal, market_snapshot)
-        fallback_reason = "Gemini orchestrator unavailable"
-        if GEMINI_IMPORT_ERROR:
-            fallback_reason = f"{fallback_reason}: {GEMINI_IMPORT_ERROR}"
+        if self.agent:
+            return self.agent.analyse_market_context(symbol, ml_signal, market_snapshot)
+        fallback_reason = "Agent orchestrator unavailable"
+        if AGENT_IMPORT_ERROR:
+            fallback_reason = f"{fallback_reason}: {AGENT_IMPORT_ERROR}"
         return {
             "validated_signal": ml_signal.get("signal", 0),
             "confidence_adjustment": 0.0,
@@ -266,13 +266,13 @@ class BridgeState:
         perf: PerformanceMetrics,
     ) -> Dict[str, Any]:
         perf_payload = asdict(perf) if isinstance(perf, PerformanceMetrics) else {}
-        if self.gemini:
-            return self.gemini.recommend_leverage(
+        if self.agent:
+            return self.agent.recommend_leverage(
                 symbol, ml_confidence, regime, current_leverage, perf_payload
             )
         return {
             "recommended_leverage": current_leverage,
-            "reasoning": "Gemini unavailable – using current leverage",
+            "reasoning": "Agent unavailable – using current leverage",
         }
 
     def _resolve_initial_equity(
