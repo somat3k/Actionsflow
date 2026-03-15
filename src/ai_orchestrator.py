@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from src.config import AppConfig
-from src.gemini_orchestrator import GeminiOrchestrator, _SYSTEM_PROMPT, build_market_context_prompt
 from src.agent_orchestrator import AgentOrchestrator
 from src.gemini_orchestrator import _SYSTEM_PROMPT, build_market_context_prompt
 from src.utils import get_logger
@@ -354,10 +353,9 @@ class MultiAIOrchestrator:
 
         # Report unconfigured providers as skipped.
         _all_provider_keys = [
-            ("Agent", self.cfg.groq.api_key),
+            ("Groq", self.cfg.groq.api_key),
             ("OpenRouter", self.cfg.openrouter.api_key),
             ("OpenAI", self.cfg.openai.api_key),
-            ("Groq", self.cfg.groq.api_key),
         ]
         for name, key in _all_provider_keys:
             if name not in active_names:
