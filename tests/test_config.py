@@ -59,6 +59,11 @@ def test_ml_nn_override_threshold_env_var_takes_precedence(tmp_path, monkeypatch
     """ML_NN_OVERRIDE_THRESHOLD env var must override YAML/default and be parsed as float."""
     cfg_file = tmp_path / "cfg.yaml"
     cfg_file.write_text(yaml.dump({"ml": {"signals": {"nn_override_threshold": 0.75}}}))
+    monkeypatch.setenv("ML_NN_OVERRIDE_THRESHOLD", "0.55")
+    cfg = load_config(cfg_file)
+    assert isinstance(cfg.ml.nn_override_threshold, float)
+    assert cfg.ml.nn_override_threshold != 0.75, "env var did not override YAML value"
+    assert cfg.ml.nn_override_threshold == 0.55
 
     # Ensure the env var is not set before testing the YAML-only behavior.
     monkeypatch.delenv("ML_NN_OVERRIDE_THRESHOLD", raising=False)
