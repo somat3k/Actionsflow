@@ -88,11 +88,19 @@ def _build_label(df: pd.DataFrame, horizon: int = 3, threshold: float = 0.003) -
     Label: 1 (long), 0 (flat/short) based on whether the close price rises
     by more than `threshold` within `horizon` candles.
     Returns a 3-class label: 1=long, 2=short, 0=flat.
+
+    The last *horizon* rows are dropped from the result because their future
+    close price is unavailable – leaving them in would silently assign label 0
+    (flat) to rows where the price may have moved, corrupting training targets
+    and causing the "wormhole" data-leakage effect.
     """
     future_ret = df["close"].shift(-horizon) / df["close"] - 1
     labels = pd.Series(0, index=df.index, dtype=int)
     labels[future_ret > threshold] = 1
     labels[future_ret < -threshold] = 2
+    # Drop trailing rows that have no valid future return.
+    if horizon > 0 and len(labels) > horizon:
+        labels = labels.iloc[:-horizon]
     return labels
 
 
@@ -263,21 +271,24 @@ class QuantumEnsemble:
         )
         X_raw, feature_cols = _prepare_features(df)
         y = _build_label(df).values
+        # _build_label already drops trailing horizon rows; trim features to match.
         X_raw = X_raw[: len(y)]
-        y = y[: len(X_raw)]
 
         split = int(len(X_raw) * 0.80)
         if split < 10:
             log.warning("Insufficient data for %s@%s", symbol, timeframe)
             return {}
 
-        X_train, X_val = X_raw[:split], X_raw[split:]
         y_train, y_val = y[:split], y[split:]
 
+        # Fit scaler on training portion only to avoid leaking val statistics.
         scaler = StandardScaler()
-        scaler.fit(X_train)
-        X_train_s = scaler.transform(X_train)
-        X_val_s = scaler.transform(X_val)
+        scaler.fit(X_raw[:split])
+        # Transform the *full* (trimmed) dataset so temporal-window features
+        # span the train/val boundary without a gap.
+        X_all_s = scaler.transform(X_raw)
+        X_train_s = X_all_s[:split]
+        X_val_s = X_all_s[split:]
 
         scores: Dict[str, float] = {}
 
@@ -481,18 +492,22 @@ class QuantumEnsemble:
 
         X_raw, self.feature_cols = _prepare_features(df)
         y = _build_label(df).values
-        # trim last few rows (no label)
+        # _build_label already drops the last `horizon` rows (rows whose future
+        # return is NaN and would be silently mislabelled as flat=0).  Trim the
+        # feature matrix to match the shorter label array.
         X_raw = X_raw[: len(y)]
-        y = y[: len(X_raw)]
 
         # Train/val split (80/20, time-ordered)
         split = int(len(X_raw) * 0.80)
-        X_train, X_val = X_raw[:split], X_raw[split:]
         y_train, y_val = y[:split], y[split:]
 
-        self.scaler.fit(X_train)
-        X_train_s = self.scaler.transform(X_train)
-        X_val_s = self.scaler.transform(X_val)
+        # Fit scaler on training portion only to avoid leaking val statistics.
+        self.scaler.fit(X_raw[:split])
+        # Transform the *full* (trimmed) dataset so temporal-window features
+        # computed later span the train/val boundary without a gap.
+        X_all_s = self.scaler.transform(X_raw)
+        X_train_s = X_all_s[:split]
+        X_val_s = X_all_s[split:]
 
         scores: Dict[str, float] = {}
 
@@ -562,14 +577,17 @@ class QuantumEnsemble:
         )
         log.info("LinearClassifier val acc: %.4f", scores["linear"])
 
-        # Neural Network (MLP) with temporal-window feature augmentation
+        # Neural Network (MLP) with temporal-window feature augmentation.
+        # Build temporal features on the *full* scaled dataset before splitting
+        # so that the first validation samples use training rows as their
+        # rolling context – the same temporal continuity present at inference.
+        # (Previously features were built separately on train/val, creating a
+        # "wormhole" where validation context came from other validation rows.)
         log.info("Training NeuralNetwork (MLP) …")
-        X_aug_train, y_aug_train = _make_temporal_features(
-            X_train_s, y_train, _NN_WINDOW
-        )
-        X_aug_val, y_aug_val = _make_temporal_features(
-            X_val_s, y_val, _NN_WINDOW
-        )
+        X_aug_all, y_aug_all = _make_temporal_features(X_all_s, y, _NN_WINDOW)
+        aug_split = max(0, split - _NN_WINDOW)
+        X_aug_train, y_aug_train = X_aug_all[:aug_split], y_aug_all[:aug_split]
+        X_aug_val, y_aug_val = X_aug_all[aug_split:], y_aug_all[aug_split:]
         if len(X_aug_train) >= _NN_WINDOW and len(X_aug_val) > 0:
             try:
                 self.nn_model = _build_nn(X_aug_train.shape[1], self.N_CLASSES)
