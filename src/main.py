@@ -947,17 +947,17 @@ def run_infinity_training(config_path: Optional[Path] = None) -> int:
         if should_eval:
             trade_history = [asdict(t) for t in broker.trade_history]
             last_cycle = db.get_cache("signal:paper:last_cycle")
-            cached_gemini_time = 0.0
+            cached_agent_time = 0.0
             cached_action_time = 0.0
             if isinstance(last_cycle, dict):
-                cached_gemini_time = float(last_cycle.get("avg_gemini_time_s", 0.0))
+                cached_agent_time = float(last_cycle.get("avg_agent_time_s", 0.0))
                 cached_action_time = float(last_cycle.get("avg_action_time_s", 0.0))
 
             metrics, _ = evaluator.evaluate(
                 trade_history,
                 initial_equity=cfg.paper_broker.initial_equity,
                 final_equity=broker.equity,
-                gemini_answer_time_avg_s=cached_gemini_time,
+                gemini_answer_time_avg_s=cached_agent_time,
                 action_time_avg_s=cached_action_time,
             )
             metrics_dict = asdict(metrics)
@@ -1053,7 +1053,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
     ensemble = QuantumEnsemble(cfg)
     delegation_agent = ModelDelegationAgent(ensemble)
     ai_orchestrator = MultiAIOrchestrator(cfg)
-    gemini = ai_orchestrator._fallback  # GeminiOrchestrator for short-message payloads
+    agent = ai_orchestrator._fallback  # AgentOrchestrator for short-message payloads
     risk_mgr = RiskManager(cfg)
     supervised = SupervisedLearningModule(cfg)
     state_dir = Path(cfg.system.state_dir)
@@ -1140,7 +1140,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         )
 
         # Build short message payload
-        payload = gemini.build_short_message_payload(
+        payload = agent.build_short_message_payload(
             symbol, validated_signal, ml_signal["confidence"],
             regime, final_leverage, current_price,
         )
@@ -1238,7 +1238,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
     equity = broker.get_equity()
     total_ret = (equity - cfg.paper_broker.initial_equity) / cfg.paper_broker.initial_equity
     avg_action_time = sum(action_times) / len(action_times) if action_times else 0.0
-    avg_gemini_time = gemini.avg_answer_time
+    avg_agent_time = agent.avg_answer_time
     summary = (
         f"## 📊 Paper Trading Cycle – {utc_now().strftime('%Y-%m-%d %H:%M UTC')}\n\n"
         f"- **Equity:** {fmt_usd(equity)}\n"
@@ -1247,7 +1247,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         f"- **Total Trades:** {len(broker.trade_history)}\n"
         f"- **Actions This Cycle:** {len(actions_taken)}\n"
         f"- **Avg Action Time:** {avg_action_time:.2f}s\n"
-        f"- **Avg Gemini Time:** {avg_gemini_time:.2f}s\n"
+        f"- **Avg Agent Time:** {avg_agent_time:.2f}s\n"
     )
     _print_github_summary(summary)
     db.set_cache(
@@ -1259,7 +1259,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
             "trades": len(broker.trade_history),
             "num_positions": len(broker.positions),
             "avg_action_time_s": avg_action_time,
-            "avg_gemini_time_s": avg_gemini_time,
+            "avg_agent_time_s": avg_agent_time,
             "signal_payloads": signal_payloads,
         },
     )
@@ -1463,10 +1463,10 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
 
     # Retrieve cached timing metrics from the last signal cycle.
     last_cycle = db.get_cache("signal:paper:last_cycle")
-    cached_gemini_time = 0.0
+    cached_agent_time = 0.0
     cached_action_time = 0.0
     if isinstance(last_cycle, dict):
-        cached_gemini_time = float(last_cycle.get("avg_gemini_time_s", 0.0))
+        cached_agent_time = float(last_cycle.get("avg_agent_time_s", 0.0))
         cached_action_time = float(last_cycle.get("avg_action_time_s", 0.0))
 
     metrics, adjustments = evaluator.evaluate(
@@ -1474,7 +1474,7 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
         initial_equity=cfg.paper_broker.initial_equity,
         final_equity=broker.equity,
         num_positions=len(broker.positions),
-        gemini_answer_time_avg_s=cached_gemini_time,
+        gemini_answer_time_avg_s=cached_agent_time,
         action_time_avg_s=cached_action_time,
     )
 
