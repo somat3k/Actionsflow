@@ -51,6 +51,10 @@ from src.utils import clamp, fmt_pct, fmt_usd, get_logger, parse_snapshot_end_ms
 log = get_logger(__name__)
 
 DEFAULT_HP_EDGE_MULTIPLIER = 1.15
+MIN_HP_EDGE_MULTIPLIER = 1.01  # Ensure a meaningful capacity shift between edges.
+ACCURACY_WEIGHT = 0.6
+CONFIDENCE_WEIGHT = 0.4
+HP_EDGE_SCORE_FORMULA = f"{ACCURACY_WEIGHT:.2f}*accuracy + {CONFIDENCE_WEIGHT:.2f}*avg_confidence"
 
 
 def _build_db_manager(cfg) -> DatabaseManager:
@@ -569,7 +573,7 @@ def _resolve_hp_edge_multiplier() -> float:
     except ValueError:
         log.warning("Invalid HP_EDGE_MULTIPLIER=%s; using default %s", raw, DEFAULT_HP_EDGE_MULTIPLIER)
         return DEFAULT_HP_EDGE_MULTIPLIER
-    if value < 1.01:
+    if value < MIN_HP_EDGE_MULTIPLIER:
         log.warning("HP_EDGE_MULTIPLIER too small (%s); using %s", raw, DEFAULT_HP_EDGE_MULTIPLIER)
         return DEFAULT_HP_EDGE_MULTIPLIER
     return value
@@ -753,7 +757,7 @@ def _build_hyperparameter_edges(cfg: AppConfig) -> Dict[str, Dict[str, Any]]:
 
 def _score_hyperparameter_edge(metrics: PerformanceMetrics) -> float:
     """Blend accuracy and confidence, weighting correctness slightly higher."""
-    return metrics.accuracy * 0.6 + metrics.avg_confidence * 0.4
+    return metrics.accuracy * ACCURACY_WEIGHT + metrics.avg_confidence * CONFIDENCE_WEIGHT
 
 
 def _update_hyperparameter_edges(
@@ -803,7 +807,7 @@ def _update_hyperparameter_edges(
     edge_state = {
         "selected_edge": best_edge,
         "last_evaluated_edge": selected_edge,
-        "score_formula": "0.6*accuracy + 0.4*avg_confidence",
+        "score_formula": HP_EDGE_SCORE_FORMULA,
         "edges": edge_stats,
         "edge_configs": edges,
         "updated_at": utc_now().isoformat(),
