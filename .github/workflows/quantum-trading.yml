@@ -195,7 +195,7 @@ jobs:
           MIN_TRADES_PER_DAY="${{ needs.setup.outputs.min_trades_per_day }}"
           SIGNAL_CYCLES="${{ needs.setup.outputs.signal_cycles }}"
           if [[ ! "${SIGNAL_CYCLES}" =~ ^[0-9]+$ ]]; then
-            echo "Invalid signal_cycles value '${SIGNAL_CYCLES}'"
+            echo "Invalid signal_cycles value '${SIGNAL_CYCLES}': must be a non-negative integer"
             exit 1
           fi
           if [[ "${SIGNAL_CYCLES}" == "0" ]]; then

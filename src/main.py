@@ -50,6 +50,8 @@ from src.utils import clamp, fmt_pct, fmt_usd, get_logger, parse_snapshot_end_ms
 
 log = get_logger(__name__)
 
+DEFAULT_HP_EDGE_MULTIPLIER = 1.15
+
 
 def _build_db_manager(cfg) -> DatabaseManager:
     db_path = Path(cfg.system.state_dir) / cfg.system.database_file
@@ -561,15 +563,15 @@ def _update_model_weights_from_evaluation(
 
 
 def _resolve_hp_edge_multiplier() -> float:
-    raw = os.environ.get("HP_EDGE_MULTIPLIER", "1.15")
+    raw = os.environ.get("HP_EDGE_MULTIPLIER", str(DEFAULT_HP_EDGE_MULTIPLIER))
     try:
         value = float(raw)
     except ValueError:
-        log.warning("Invalid HP_EDGE_MULTIPLIER=%s; using default 1.15", raw)
-        return 1.15
+        log.warning("Invalid HP_EDGE_MULTIPLIER=%s; using default %s", raw, DEFAULT_HP_EDGE_MULTIPLIER)
+        return DEFAULT_HP_EDGE_MULTIPLIER
     if value < 1.01:
-        log.warning("HP_EDGE_MULTIPLIER too small (%s); using 1.15", raw)
-        return 1.15
+        log.warning("HP_EDGE_MULTIPLIER too small (%s); using %s", raw, DEFAULT_HP_EDGE_MULTIPLIER)
+        return DEFAULT_HP_EDGE_MULTIPLIER
     return value
 
 
@@ -739,6 +741,7 @@ def _build_hyperparameter_edges(cfg: AppConfig) -> Dict[str, Dict[str, Any]]:
 
 
 def _score_hyperparameter_edge(metrics: PerformanceMetrics) -> float:
+    """Blend accuracy and confidence, weighting correctness slightly higher."""
     return metrics.accuracy * 0.6 + metrics.avg_confidence * 0.4
 
 
