@@ -750,7 +750,7 @@ def _build_hyperparameter_edge(cfg: AppConfig, *, multiplier: float, label: str)
         "label": label,
         "direction": direction,
         "multiplier": multiplier,
-        "matrix_multiplier": multiplier,
+        "config_multiplier": multiplier,
         "adjustments": adjustments,
     }
 
@@ -766,7 +766,7 @@ def _build_hyperparameter_edges(cfg: AppConfig) -> Dict[str, Dict[str, Any]]:
 
 
 def _score_hyperparameter_edge(metrics: PerformanceMetrics) -> float:
-    """Blend accuracy and confidence, weighting correctness slightly higher."""
+    """Blend accuracy and confidence using a 60/40 accuracy/confidence split."""
     accuracy = clamp(metrics.accuracy, 0.0, 1.0)
     confidence = clamp(metrics.avg_confidence, 0.0, 1.0)
     return accuracy * ACCURACY_WEIGHT + confidence * CONFIDENCE_WEIGHT
