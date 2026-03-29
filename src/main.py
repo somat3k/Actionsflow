@@ -578,18 +578,29 @@ def _resolve_hp_edge_multiplier() -> float:
 def _build_hyperparameter_edge(cfg: AppConfig, *, multiplier: float, label: str) -> Dict[str, Any]:
     direction = "increase" if multiplier >= 1.0 else "decrease"
 
-    def _scale_int(value: int, minimum: int = 1, maximum: Optional[int] = None) -> int:
-        scaled = int(round(value * multiplier))
+    def _scale_int(
+        value: int,
+        multiplier_value: float,
+        minimum: int = 1,
+        maximum: Optional[int] = None,
+    ) -> int:
+        scaled = int(round(value * multiplier_value))
         scaled = max(minimum, scaled)
         if maximum is not None:
             scaled = min(maximum, scaled)
         return scaled
 
-    def _scale_float(value: float, minimum: float = 0.0001, maximum: Optional[float] = None) -> float:
-        scaled = value * multiplier
-        scaled = max(minimum, scaled)
+    def _scale_float(
+        value: float,
+        multiplier_value: float,
+        minimum: float = 0.0001,
+        maximum: Optional[float] = None,
+    ) -> float:
+        scaled = value * multiplier_value
         if maximum is not None:
-            scaled = min(maximum, scaled)
+            scaled = clamp(scaled, minimum, maximum)
+        else:
+            scaled = max(minimum, scaled)
         return float(scaled)
 
     def _append(adjustments: List[Dict[str, Any]], parameter: str, old: Any, new: Any) -> None:
@@ -611,25 +622,25 @@ def _build_hyperparameter_edge(cfg: AppConfig, *, multiplier: float, label: str)
         adjustments,
         "ml.models.xgboost.n_estimators",
         cfg.ml.xgb_n_estimators,
-        _scale_int(cfg.ml.xgb_n_estimators, minimum=50),
+        _scale_int(cfg.ml.xgb_n_estimators, multiplier, minimum=50),
     )
     _append(
         adjustments,
         "ml.models.xgboost.max_depth",
         cfg.ml.xgb_max_depth,
-        _scale_int(cfg.ml.xgb_max_depth, minimum=2, maximum=16),
+        _scale_int(cfg.ml.xgb_max_depth, multiplier, minimum=2, maximum=16),
     )
     _append(
         adjustments,
         "ml.models.xgboost.learning_rate",
         cfg.ml.xgb_learning_rate,
-        _scale_float(cfg.ml.xgb_learning_rate, minimum=0.005, maximum=0.5),
+        _scale_float(cfg.ml.xgb_learning_rate, multiplier, minimum=0.005, maximum=0.5),
     )
     _append(
         adjustments,
         "ml.models.xgboost.min_child_weight",
         cfg.ml.xgb_min_child_weight,
-        _scale_int(cfg.ml.xgb_min_child_weight, minimum=1, maximum=20),
+        _scale_int(cfg.ml.xgb_min_child_weight, multiplier, minimum=1, maximum=20),
     )
     _append(
         adjustments,
@@ -648,19 +659,19 @@ def _build_hyperparameter_edge(cfg: AppConfig, *, multiplier: float, label: str)
         adjustments,
         "ml.models.gradient_boost.n_estimators",
         cfg.ml.gb_n_estimators,
-        _scale_int(cfg.ml.gb_n_estimators, minimum=50),
+        _scale_int(cfg.ml.gb_n_estimators, multiplier, minimum=50),
     )
     _append(
         adjustments,
         "ml.models.gradient_boost.max_depth",
         cfg.ml.gb_max_depth,
-        _scale_int(cfg.ml.gb_max_depth, minimum=2, maximum=10),
+        _scale_int(cfg.ml.gb_max_depth, multiplier, minimum=2, maximum=10),
     )
     _append(
         adjustments,
         "ml.models.gradient_boost.learning_rate",
         cfg.ml.gb_learning_rate,
-        _scale_float(cfg.ml.gb_learning_rate, minimum=0.01, maximum=0.5),
+        _scale_float(cfg.ml.gb_learning_rate, multiplier, minimum=0.01, maximum=0.5),
     )
     _append(
         adjustments,
@@ -673,52 +684,52 @@ def _build_hyperparameter_edge(cfg: AppConfig, *, multiplier: float, label: str)
         adjustments,
         "ml.models.random_forest.n_estimators",
         cfg.ml.rf_n_estimators,
-        _scale_int(cfg.ml.rf_n_estimators, minimum=50),
+        _scale_int(cfg.ml.rf_n_estimators, multiplier, minimum=50),
     )
     _append(
         adjustments,
         "ml.models.random_forest.max_depth",
         cfg.ml.rf_max_depth,
-        _scale_int(cfg.ml.rf_max_depth, minimum=2, maximum=20),
+        _scale_int(cfg.ml.rf_max_depth, multiplier, minimum=2, maximum=20),
     )
     _append(
         adjustments,
         "ml.models.random_forest.min_samples_leaf",
         cfg.ml.rf_min_samples_leaf,
-        _scale_int(cfg.ml.rf_min_samples_leaf, minimum=1, maximum=10),
+        _scale_int(cfg.ml.rf_min_samples_leaf, multiplier, minimum=1, maximum=10),
     )
     if cfg.ml.rf_max_leaf_nodes is not None:
         _append(
             adjustments,
             "ml.models.random_forest.max_leaf_nodes",
             cfg.ml.rf_max_leaf_nodes,
-            _scale_int(cfg.ml.rf_max_leaf_nodes, minimum=10),
+            _scale_int(cfg.ml.rf_max_leaf_nodes, multiplier, minimum=10),
         )
 
     _append(
         adjustments,
         "ml.models.extra_trees.n_estimators",
         cfg.ml.extra_trees_n_estimators,
-        _scale_int(cfg.ml.extra_trees_n_estimators, minimum=50),
+        _scale_int(cfg.ml.extra_trees_n_estimators, multiplier, minimum=50),
     )
     _append(
         adjustments,
         "ml.models.extra_trees.max_depth",
         cfg.ml.extra_trees_max_depth,
-        _scale_int(cfg.ml.extra_trees_max_depth, minimum=2, maximum=20),
+        _scale_int(cfg.ml.extra_trees_max_depth, multiplier, minimum=2, maximum=20),
     )
     _append(
         adjustments,
         "ml.models.extra_trees.min_samples_leaf",
         cfg.ml.extra_trees_min_samples_leaf,
-        _scale_int(cfg.ml.extra_trees_min_samples_leaf, minimum=1, maximum=10),
+        _scale_int(cfg.ml.extra_trees_min_samples_leaf, multiplier, minimum=1, maximum=10),
     )
     if cfg.ml.extra_trees_max_leaf_nodes is not None:
         _append(
             adjustments,
             "ml.models.extra_trees.max_leaf_nodes",
             cfg.ml.extra_trees_max_leaf_nodes,
-            _scale_int(cfg.ml.extra_trees_max_leaf_nodes, minimum=10),
+            _scale_int(cfg.ml.extra_trees_max_leaf_nodes, multiplier, minimum=10),
         )
 
     return {
