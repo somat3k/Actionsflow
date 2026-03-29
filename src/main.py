@@ -51,10 +51,17 @@ from src.utils import clamp, fmt_pct, fmt_usd, get_logger, parse_snapshot_end_ms
 log = get_logger(__name__)
 
 DEFAULT_HP_EDGE_MULTIPLIER = 1.15
-MIN_HP_EDGE_MULTIPLIER = 1.01  # Ensure a meaningful capacity shift between edges.
+MIN_MEANINGFUL_HP_EDGE_MULTIPLIER = 1.01  # Ensure a meaningful capacity shift between edges.
 ACCURACY_WEIGHT = 0.6
 CONFIDENCE_WEIGHT = 0.4
 HP_EDGE_SCORE_FORMULA = f"{ACCURACY_WEIGHT:.2f}*accuracy + {CONFIDENCE_WEIGHT:.2f}*avg_confidence"
+DEFAULT_HYPERPARAM_EDGE = "edge_plus"
+
+
+def _update_running_average(old_avg: float, new_value: float, sample_count: int) -> float:
+    if sample_count <= 1:
+        return new_value
+    return (old_avg * (sample_count - 1) + new_value) / sample_count
 
 
 def _build_db_manager(cfg) -> DatabaseManager:
@@ -573,7 +580,7 @@ def _resolve_hp_edge_multiplier() -> float:
     except ValueError:
         log.warning("Invalid HP_EDGE_MULTIPLIER=%s; using default %s", raw, DEFAULT_HP_EDGE_MULTIPLIER)
         return DEFAULT_HP_EDGE_MULTIPLIER
-    if value < MIN_HP_EDGE_MULTIPLIER:
+    if value < MIN_MEANINGFUL_HP_EDGE_MULTIPLIER:
         log.warning("HP_EDGE_MULTIPLIER too small (%s); using %s", raw, DEFAULT_HP_EDGE_MULTIPLIER)
         return DEFAULT_HP_EDGE_MULTIPLIER
     return value
@@ -608,7 +615,10 @@ def _build_hyperparameter_edge(cfg: AppConfig, *, multiplier: float, label: str)
         return float(scaled)
 
     def _append(adjustments: List[Dict[str, Any]], parameter: str, old: Any, new: Any) -> None:
-        if old == new:
+        if isinstance(old, float) and isinstance(new, float):
+            if abs(old - new) < 1e-9:
+                return
+        elif old == new:
             return
         adjustments.append(
             {
@@ -650,13 +660,13 @@ def _build_hyperparameter_edge(cfg: AppConfig, *, multiplier: float, label: str)
         adjustments,
         "ml.models.xgboost.subsample",
         cfg.ml.xgb_subsample,
-        clamp(cfg.ml.xgb_subsample * multiplier, 0.5, 1.0),
+        _scale_float(cfg.ml.xgb_subsample, multiplier, minimum=0.5, maximum=1.0),
     )
     _append(
         adjustments,
         "ml.models.xgboost.colsample_bytree",
         cfg.ml.xgb_colsample_bytree,
-        clamp(cfg.ml.xgb_colsample_bytree * multiplier, 0.5, 1.0),
+        _scale_float(cfg.ml.xgb_colsample_bytree, multiplier, minimum=0.5, maximum=1.0),
     )
 
     _append(
@@ -681,7 +691,7 @@ def _build_hyperparameter_edge(cfg: AppConfig, *, multiplier: float, label: str)
         adjustments,
         "ml.models.gradient_boost.subsample",
         cfg.ml.gb_subsample,
-        clamp(cfg.ml.gb_subsample * multiplier, 0.5, 1.0),
+        _scale_float(cfg.ml.gb_subsample, multiplier, minimum=0.5, maximum=1.0),
     )
 
     _append(
@@ -757,7 +767,9 @@ def _build_hyperparameter_edges(cfg: AppConfig) -> Dict[str, Dict[str, Any]]:
 
 def _score_hyperparameter_edge(metrics: PerformanceMetrics) -> float:
     """Blend accuracy and confidence, weighting correctness slightly higher."""
-    return metrics.accuracy * ACCURACY_WEIGHT + metrics.avg_confidence * CONFIDENCE_WEIGHT
+    accuracy = clamp(metrics.accuracy, 0.0, 1.0)
+    confidence = clamp(metrics.avg_confidence, 0.0, 1.0)
+    return accuracy * ACCURACY_WEIGHT + confidence * CONFIDENCE_WEIGHT
 
 
 def _update_hyperparameter_edges(
@@ -769,9 +781,9 @@ def _update_hyperparameter_edges(
     state = db.get_cache("evaluation:hyperparam_edges")
     if not isinstance(state, dict):
         state = {}
-    selected_edge = state.get("selected_edge", "edge_plus")
+    selected_edge = state.get("selected_edge", DEFAULT_HYPERPARAM_EDGE)
     if selected_edge not in edges:
-        selected_edge = "edge_plus"
+        selected_edge = DEFAULT_HYPERPARAM_EDGE
 
     score = _score_hyperparameter_edge(metrics)
     edge_stats = state.get("edges", {})
@@ -780,13 +792,13 @@ def _update_hyperparameter_edges(
         {"samples": 0, "avg_score": 0.0, "avg_accuracy": 0.0, "avg_confidence": 0.0},
     )
     samples = int(current_stats.get("samples", 0)) + 1
-    avg_score = (current_stats.get("avg_score", 0.0) * (samples - 1) + score) / samples
-    avg_accuracy = (
-        current_stats.get("avg_accuracy", 0.0) * (samples - 1) + metrics.accuracy
-    ) / samples
-    avg_confidence = (
-        current_stats.get("avg_confidence", 0.0) * (samples - 1) + metrics.avg_confidence
-    ) / samples
+    avg_score = _update_running_average(current_stats.get("avg_score", 0.0), score, samples)
+    avg_accuracy = _update_running_average(
+        current_stats.get("avg_accuracy", 0.0), metrics.accuracy, samples
+    )
+    avg_confidence = _update_running_average(
+        current_stats.get("avg_confidence", 0.0), metrics.avg_confidence, samples
+    )
     edge_stats[selected_edge] = {
         "samples": samples,
         "avg_score": avg_score,
@@ -1948,9 +1960,10 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
         f"| Action Avg Time | {metrics.action_time_avg_s:.2f}s |\n\n"
         f"**Threshold Check:** {'✅ PASS' if passes else '❌ FAIL'}\n"
     )
+    selected_edge = edge_state.get("selected_edge", DEFAULT_HYPERPARAM_EDGE)
     summary += (
-        f"\n**Hyperparameter Edge:** `{edge_state.get('selected_edge', 'edge_plus')}` "
-        f"(score={edge_state.get('edges', {}).get(edge_state.get('selected_edge', ''), {}).get('avg_score', 0.0):.3f})\n"
+        f"\n**Hyperparameter Edge:** `{selected_edge}` "
+        f"(score={edge_state.get('edges', {}).get(selected_edge, {}).get('avg_score', 0.0):.3f})\n"
     )
     if adjustments:
         summary += "\n### Auto-Adjustments\n"
@@ -1965,7 +1978,7 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
             "sharpe_ratio": metrics.sharpe_ratio,
             "pause_trading": pause_trading,
             "pause_reason": pause_reason,
-            "hyperparameter_edge": edge_state.get("selected_edge", "edge_plus"),
+            "hyperparameter_edge": edge_state.get("selected_edge", DEFAULT_HYPERPARAM_EDGE),
         },
     )
     db.record_task_completion(

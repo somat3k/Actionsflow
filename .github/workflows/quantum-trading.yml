@@ -41,7 +41,7 @@ on:
         required: false
         default: "2000"
       signal_cycles:
-        description: "Number of signal cycles to run per interval (0 = schedule-driven infinity)"
+        description: "Number of signal cycles to run per interval (0 = schedule-driven single cycle)"
         required: false
         default: "1"
       symbols:
@@ -194,12 +194,12 @@ jobs:
           INTERVAL_SEQUENCE="${{ needs.setup.outputs.interval_sequence }}"
           MIN_TRADES_PER_DAY="${{ needs.setup.outputs.min_trades_per_day }}"
           SIGNAL_CYCLES="${{ needs.setup.outputs.signal_cycles }}"
-          if [[ ! "${SIGNAL_CYCLES}" =~ ^[0-9]+$ ]]; then
+          if [[ ! "${SIGNAL_CYCLES}" =~ ^(0|[1-9][0-9]*)$ ]]; then
             echo "Invalid signal_cycles value '${SIGNAL_CYCLES}': must be a non-negative integer"
             exit 1
           fi
           if [[ "${SIGNAL_CYCLES}" == "0" ]]; then
-            echo "signal_cycles=0 requested; schedule-driven runs provide continuous execution." >> "$GITHUB_STEP_SUMMARY"
+            echo "signal_cycles=0 requested; running a single cycle and relying on schedule for continuous execution." >> "$GITHUB_STEP_SUMMARY"
             SIGNAL_CYCLES=1
           fi
           IFS=',' read -ra INTERVALS <<< "${INTERVAL_SEQUENCE}"
