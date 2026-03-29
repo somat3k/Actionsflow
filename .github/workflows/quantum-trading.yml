@@ -39,7 +39,7 @@ on:
       min_trades_per_day:
         description: "Minimum target paper trades per day"
         required: false
-        default: "2000"
+        default: "20"
       signal_cycles:
         description: "Number of signal cycles to run per interval (0 = schedule-driven single cycle)"
         required: false
