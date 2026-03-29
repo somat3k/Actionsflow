@@ -1,0 +1,17 @@
+{
+  "generated_at": "2024-01-01T00:00:00Z",
+  "evaluation_report": {
+    "metrics": {
+      "total_return_pct": 0.0,
+      "sharpe_ratio": 0.0,
+      "win_rate": 0.0,
+      "accuracy": 0.0,
+      "profit_factor": 0.0,
+      "avg_confidence": 0.0
+    },
+    "hyperparameter_state": {
+      "selected_edge": "edge_plus"
+    }
+  },
+  "training_scores": {}
+}

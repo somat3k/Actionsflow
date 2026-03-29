@@ -51,6 +51,7 @@ A fully automated, production-grade perpetuals trading system built on **GitHub 
 | [Paper Trading – Model Training](.github/workflows/paper-training.yml) | Daily 00:00 UTC | Train / retrain all ML models |
 | [Live Trader Commander](.github/workflows/live-trading.yml) | On dispatch | Execute real trades (guarded) |
 | [Model Evaluation & Adjustments](.github/workflows/model-evaluation.yml) | Every hour | Evaluate performance, emit adjustments |
+| [Metrics Dashboard – GitHub Pages](.github/workflows/metrics-pages.yml) | Every 6 hours | Publish evaluation metrics & releases dashboard |
 | [CI – Tests & Lint](.github/workflows/ci.yml) | Push / PR | Unit tests on Python 3.10 & 3.11 |
 
 ---

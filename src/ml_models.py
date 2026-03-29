@@ -296,8 +296,12 @@ class QuantumEnsemble:
         xgb_model = None
         if _XGB_AVAILABLE:
             xgb_model = xgb.XGBClassifier(
-                n_estimators=500, max_depth=6, learning_rate=0.05,
-                subsample=0.8, colsample_bytree=0.8, min_child_weight=3,
+                n_estimators=self.ml_cfg.xgb_n_estimators,
+                max_depth=self.ml_cfg.xgb_max_depth,
+                learning_rate=self.ml_cfg.xgb_learning_rate,
+                subsample=self.ml_cfg.xgb_subsample,
+                colsample_bytree=self.ml_cfg.xgb_colsample_bytree,
+                min_child_weight=self.ml_cfg.xgb_min_child_weight,
                 eval_metric="mlogloss", verbosity=0, n_jobs=-1,
             )
             xgb_model.fit(
@@ -307,7 +311,12 @@ class QuantumEnsemble:
 
         # Random Forest
         rf_model = RandomForestClassifier(
-            n_estimators=200, max_depth=10, n_jobs=-1, random_state=42
+            n_estimators=self.ml_cfg.rf_n_estimators,
+            max_depth=self.ml_cfg.rf_max_depth,
+            min_samples_leaf=self.ml_cfg.rf_min_samples_leaf,
+            max_leaf_nodes=self.ml_cfg.rf_max_leaf_nodes,
+            n_jobs=-1,
+            random_state=42,
         )
         rf_model.fit(X_train_s, y_train)
         scores["rf"] = float(np.mean(rf_model.predict(X_val_s) == y_val))
@@ -323,7 +332,10 @@ class QuantumEnsemble:
         tree_clf = ExtraTreesClassifier(
             n_estimators=self.ml_cfg.extra_trees_n_estimators,
             max_depth=self.ml_cfg.extra_trees_max_depth,
-            n_jobs=-1, random_state=42
+            min_samples_leaf=self.ml_cfg.extra_trees_min_samples_leaf,
+            max_leaf_nodes=self.ml_cfg.extra_trees_max_leaf_nodes,
+            n_jobs=-1,
+            random_state=42,
         )
         tree_clf.fit(X_train_s, y_train)
         scores["tree_clf"] = float(np.mean(tree_clf.predict(X_val_s) == y_val))
@@ -515,12 +527,12 @@ class QuantumEnsemble:
         if _XGB_AVAILABLE:
             log.info("Training XGBoost …")
             self.xgb_model = xgb.XGBClassifier(
-                n_estimators=500,
-                max_depth=6,
-                learning_rate=0.05,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                min_child_weight=3,
+                n_estimators=self.ml_cfg.xgb_n_estimators,
+                max_depth=self.ml_cfg.xgb_max_depth,
+                learning_rate=self.ml_cfg.xgb_learning_rate,
+                subsample=self.ml_cfg.xgb_subsample,
+                colsample_bytree=self.ml_cfg.xgb_colsample_bytree,
+                min_child_weight=self.ml_cfg.xgb_min_child_weight,
                 eval_metric="mlogloss",
                 verbosity=0,
                 n_jobs=-1,
@@ -538,7 +550,10 @@ class QuantumEnsemble:
         # Gradient Boosting
         log.info("Training GradientBoosting …")
         self.gb_model = GradientBoostingClassifier(
-            n_estimators=200, max_depth=5, learning_rate=0.05, subsample=0.8
+            n_estimators=self.ml_cfg.gb_n_estimators,
+            max_depth=self.ml_cfg.gb_max_depth,
+            learning_rate=self.ml_cfg.gb_learning_rate,
+            subsample=self.ml_cfg.gb_subsample,
         )
         self.gb_model.fit(X_train_s, y_train)
         scores["gb"] = float(np.mean(self.gb_model.predict(X_val_s) == y_val))
@@ -547,7 +562,12 @@ class QuantumEnsemble:
         # Random Forest
         log.info("Training RandomForest …")
         self.rf_model = RandomForestClassifier(
-            n_estimators=200, max_depth=10, n_jobs=-1, random_state=42
+            n_estimators=self.ml_cfg.rf_n_estimators,
+            max_depth=self.ml_cfg.rf_max_depth,
+            min_samples_leaf=self.ml_cfg.rf_min_samples_leaf,
+            max_leaf_nodes=self.ml_cfg.rf_max_leaf_nodes,
+            n_jobs=-1,
+            random_state=42,
         )
         self.rf_model.fit(X_train_s, y_train)
         scores["rf"] = float(np.mean(self.rf_model.predict(X_val_s) == y_val))
@@ -560,7 +580,10 @@ class QuantumEnsemble:
         self.tree_clf = ExtraTreesClassifier(
             n_estimators=self.ml_cfg.extra_trees_n_estimators,
             max_depth=self.ml_cfg.extra_trees_max_depth,
-            n_jobs=-1, random_state=42
+            min_samples_leaf=self.ml_cfg.extra_trees_min_samples_leaf,
+            max_leaf_nodes=self.ml_cfg.extra_trees_max_leaf_nodes,
+            n_jobs=-1,
+            random_state=42,
         )
         self.tree_clf.fit(X_train_s, y_train)
         scores["tree_clf"] = float(np.mean(self.tree_clf.predict(X_val_s) == y_val))

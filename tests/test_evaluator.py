@@ -137,6 +137,16 @@ class TestComputeMetrics:
         m = compute_metrics(trades, initial_equity=10_000.0, final_equity=10_050.0)
         assert m.avg_leverage_used == pytest.approx(20.0)
 
+    def test_avg_confidence_pass_through(self):
+        trades = [_make_trade(pnl=10.0) for _ in range(3)]
+        m = compute_metrics(
+            trades,
+            initial_equity=10_000.0,
+            final_equity=10_020.0,
+            avg_confidence=0.72,
+        )
+        assert m.avg_confidence == pytest.approx(0.72)
+
 
 # ── Evaluator.evaluate ────────────────────────────────────────────────────────
 
