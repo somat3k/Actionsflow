@@ -39,11 +39,19 @@ on:
       min_trades_per_day:
         description: "Minimum target paper trades per day"
         required: false
-        default: "2000"
+        default: "20"
+      signal_cycles:
+        description: "Number of signal cycles to run per interval (0 = schedule-driven single cycle)"
+        required: false
+        default: "1"
       symbols:
         description: "Comma-separated symbols to trade (e.g. BTC,ETH)"
         required: false
         default: "BTC,ETH,SOL,ARB,ZRO,AAVE,ADA,CATI"
+      initial_equity:
+        description: "Initial paper equity (USD)"
+        required: false
+        default: "10000"
 
   # Trigger from other workflows (training completion, evaluation, etc.)
   workflow_call:
@@ -59,7 +67,13 @@ on:
         default: "1m,5m,15m"
       min_trades_per_day:
         type: string
-        default: "2000"
+        default: "20"
+      signal_cycles:
+        type: string
+        default: "1"
+      initial_equity:
+        type: string
+        default: "10000"
 
   # Allow repository_dispatch from external systems (e.g. webhooks)
   repository_dispatch:
@@ -83,6 +97,8 @@ jobs:
       run_type: ${{ steps.params.outputs.run_type }}
       interval_sequence: ${{ steps.params.outputs.interval_sequence }}
       min_trades_per_day: ${{ steps.params.outputs.min_trades_per_day }}
+      signal_cycles: ${{ steps.params.outputs.signal_cycles }}
+      initial_equity: ${{ steps.params.outputs.initial_equity }}
       should_trade: ${{ steps.params.outputs.should_trade }}
     steps:
       - name: Resolve parameters
@@ -91,11 +107,15 @@ jobs:
           MODE="${{ inputs.trading_mode || github.event.client_payload.mode || 'paper' }}"
           RUN_TYPE="${{ inputs.run_type || github.event.client_payload.run_type || 'signal' }}"
           INTERVAL_SEQUENCE="${{ inputs.interval_sequence || github.event.client_payload.interval_sequence || '1m,5m,15m' }}"
-          MIN_TRADES_PER_DAY="${{ inputs.min_trades_per_day || github.event.client_payload.min_trades_per_day || '2000' }}"
+          MIN_TRADES_PER_DAY="${{ inputs.min_trades_per_day || github.event.client_payload.min_trades_per_day || '20' }}"
+          SIGNAL_CYCLES="${{ inputs.signal_cycles || github.event.client_payload.signal_cycles || '1' }}"
+          INITIAL_EQUITY="${{ inputs.initial_equity || github.event.client_payload.initial_equity || '10000' }}"
           echo "trading_mode=${MODE}" >> "$GITHUB_OUTPUT"
           echo "run_type=${RUN_TYPE}" >> "$GITHUB_OUTPUT"
           echo "interval_sequence=${INTERVAL_SEQUENCE}" >> "$GITHUB_OUTPUT"
           echo "min_trades_per_day=${MIN_TRADES_PER_DAY}" >> "$GITHUB_OUTPUT"
+          echo "signal_cycles=${SIGNAL_CYCLES}" >> "$GITHUB_OUTPUT"
+          echo "initial_equity=${INITIAL_EQUITY}" >> "$GITHUB_OUTPUT"
           echo "should_trade=true" >> "$GITHUB_OUTPUT"
           echo "### ⚙️ Run Parameters" >> "$GITHUB_STEP_SUMMARY"
           echo "| Parameter | Value |" >> "$GITHUB_STEP_SUMMARY"
@@ -104,6 +124,8 @@ jobs:
           echo "| Run Type | \`${RUN_TYPE}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Interval Sequence | \`${INTERVAL_SEQUENCE}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Min Trades/Day | \`${MIN_TRADES_PER_DAY}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Signal Cycles | \`${SIGNAL_CYCLES}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Initial Equity | \`${INITIAL_EQUITY}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Trigger | \`${{ github.event_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
   # ── Execute trading logic ──────────────────────────────────────────────────
@@ -160,6 +182,7 @@ jobs:
           HYPERLIQUID_WALLET_ADDRESS: ${{ secrets.HYPERLIQUID_WALLET_ADDRESS || secrets.HYPERLIQUID_ADDRESS }}
           LIVE_TRADING_ENABLED: ${{ needs.setup.outputs.trading_mode == 'live' && secrets.LIVE_TRADING_ENABLED || 'false' }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+          INITIAL_EQUITY: ${{ needs.setup.outputs.initial_equity }}
         run: |
           if [[ "${{ needs.setup.outputs.run_type }}" != "signal" ]]; then
             python -m src.main \
@@ -170,6 +193,15 @@ jobs:
 
           INTERVAL_SEQUENCE="${{ needs.setup.outputs.interval_sequence }}"
           MIN_TRADES_PER_DAY="${{ needs.setup.outputs.min_trades_per_day }}"
+          SIGNAL_CYCLES="${{ needs.setup.outputs.signal_cycles }}"
+          if [[ ! "${SIGNAL_CYCLES}" =~ ^(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid signal_cycles value '${SIGNAL_CYCLES}': must be a non-negative integer"
+            exit 1
+          fi
+          if [[ "${SIGNAL_CYCLES}" == "0" ]]; then
+            echo "signal_cycles=0 requested; running a single cycle and relying on schedule for continuous execution." >> "$GITHUB_STEP_SUMMARY"
+            SIGNAL_CYCLES=1
+          fi
           IFS=',' read -ra INTERVALS <<< "${INTERVAL_SEQUENCE}"
 
           VALID_INTERVALS=()
@@ -191,12 +223,15 @@ jobs:
           SECONDARY_DEFAULT="${VALID_INTERVALS[1]:-${FIRST_INTERVAL}}"
           MACRO_DEFAULT="${VALID_INTERVALS[2]:-${SECONDARY_DEFAULT}}"
 
-          for interval in "${VALID_INTERVALS[@]}"; do
-            export PRIMARY_INTERVAL="${interval}"
-            export SECONDARY_INTERVAL="${SECONDARY_DEFAULT}"
-            export MACRO_INTERVAL="${MACRO_DEFAULT}"
-            echo "Running signal cycle for interval ${interval}"
-            python -m src.main --run-type signal --mode "${{ needs.setup.outputs.trading_mode }}"
+          for ((cycle=1; cycle<=SIGNAL_CYCLES; cycle++)); do
+            echo "Starting signal cycle ${cycle}/${SIGNAL_CYCLES}" >> "$GITHUB_STEP_SUMMARY"
+            for interval in "${VALID_INTERVALS[@]}"; do
+              export PRIMARY_INTERVAL="${interval}"
+              export SECONDARY_INTERVAL="${SECONDARY_DEFAULT}"
+              export MACRO_INTERVAL="${MACRO_DEFAULT}"
+              echo "Running signal cycle for interval ${interval}"
+              python -m src.main --run-type signal --mode "${{ needs.setup.outputs.trading_mode }}"
+            done
           done
 
           MARKETS_COUNT=$(python -c "from src.config import load_config; cfg = load_config(); print(sum(1 for m in cfg.trading.markets if m.enabled))")

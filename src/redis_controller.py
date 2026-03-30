@@ -210,6 +210,25 @@ class RedisController:
             log.debug("RedisController.keys(%s) error: %s", pattern, exc)
             return []
 
+    def keys_sample(self, pattern: str = "*", limit: int = 50) -> List[str]:
+        """Return up to *limit* keys matching *pattern* using SCAN when possible."""
+        if self._client is None or limit <= 0:
+            return []
+        try:
+            if hasattr(self._client, "scan_iter"):
+                results: List[str] = []
+                batch_size = 100
+                for key in self._client.scan_iter(self._ns(pattern), count=batch_size):
+                    results.append(self._strip_ns(key))
+                    if len(results) >= limit:
+                        break
+                return results
+            raw: Iterable[str] = self._client.keys(self._ns(pattern))
+            return [self._strip_ns(k) for k in list(raw)[:limit]]
+        except Exception as exc:  # noqa: BLE001
+            log.debug("RedisController.keys_sample(%s) error: %s", pattern, exc)
+            return []
+
     def flush(self) -> int:
         """Delete all keys in this controller's namespace.  Returns count deleted."""
         if self._client is None:

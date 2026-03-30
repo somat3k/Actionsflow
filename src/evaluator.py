@@ -66,11 +66,12 @@ def compute_metrics(
     num_positions: int = 0,
     gemini_answer_time_avg_s: float = 0.0,
     action_time_avg_s: float = 0.0,
+    avg_confidence: float = 0.0,
 ) -> PerformanceMetrics:
     """Compute full performance metrics from a list of closed trade dicts.
 
-    Optional keyword arguments ``num_positions``, ``gemini_answer_time_avg_s``
-    and ``action_time_avg_s`` are forwarded directly into the returned
+    Optional keyword arguments ``num_positions``, ``gemini_answer_time_avg_s``,
+    ``action_time_avg_s``, and ``avg_confidence`` are forwarded directly into the returned
     :class:`PerformanceMetrics` since they are measured externally by the
     signal cycle rather than derivable from trade history alone.
     """
@@ -80,6 +81,7 @@ def compute_metrics(
         num_positions=num_positions,
         gemini_answer_time_avg_s=gemini_answer_time_avg_s,
         action_time_avg_s=action_time_avg_s,
+        avg_confidence=avg_confidence,
     )
 
     if not trade_history:
@@ -184,6 +186,7 @@ class Evaluator:
         num_positions: int = 0,
         gemini_answer_time_avg_s: float = 0.0,
         action_time_avg_s: float = 0.0,
+        avg_confidence: float = 0.0,
     ) -> Tuple[PerformanceMetrics, List[Dict[str, Any]]]:
         """
         Compute metrics and return (metrics, adjustment_recommendations).
@@ -199,6 +202,7 @@ class Evaluator:
             num_positions=num_positions,
             gemini_answer_time_avg_s=gemini_answer_time_avg_s,
             action_time_avg_s=action_time_avg_s,
+            avg_confidence=avg_confidence,
         )
 
         # ── Stabs / pierces: short-window early-warning check ─────────────
@@ -300,6 +304,7 @@ class Evaluator:
         adjustments: List[Dict[str, Any]],
         path: Path,
         label: str = "",
+        extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         output = {
@@ -308,6 +313,8 @@ class Evaluator:
             "adjustments": adjustments,
             "pass": self._passes_thresholds(metrics),
         }
+        if extra:
+            output.update(extra)
         with open(path, "w") as fh:
             json.dump(output, fh, indent=2)
         log.info("Evaluation report saved to %s", path)

@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Quantum Trading – Metrics Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0d1117;
+        --card: #161b22;
+        --muted: #8b949e;
+        --accent: #58a6ff;
+        --border: #30363d;
+      }
+      body {
+        margin: 0;
+        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: #c9d1d9;
+      }
+      header {
+        padding: 32px 40px 16px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 28px;
+      }
+      .subtitle {
+        color: var(--muted);
+        margin-top: 8px;
+      }
+      main {
+        display: grid;
+        gap: 20px;
+        padding: 0 40px 40px;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 20px;
+      }
+      .metric-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+      }
+      .metric-table th,
+      .metric-table td {
+        text-align: left;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--border);
+        font-size: 14px;
+      }
+      .metric-table td:last-child {
+        text-align: right;
+        font-weight: 600;
+      }
+      .tag {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(88, 166, 255, 0.2);
+        color: var(--accent);
+        font-size: 12px;
+      }
+      .release {
+        margin-top: 12px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      .release:last-child {
+        border-bottom: none;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Quantum Trading – Metrics Dashboard</h1>
+      <div class="subtitle" id="generatedAt">Loading latest metrics…</div>
+    </header>
+    <main>
+      <section class="card">
+        <h2>Evaluation Summary</h2>
+        <div class="tag" id="edgeTag">edge_plus</div>
+        <table class="metric-table" id="metricTable"></table>
+      </section>
+      <section class="card">
+        <h2>Performance Snapshot</h2>
+        <canvas id="metricChart" height="180"></canvas>
+      </section>
+      <section class="card">
+        <h2>Recent Releases</h2>
+        <div id="releaseList"></div>
+      </section>
+    </main>
+
+    <script>
+      const fallbackMetrics = {
+        generated_at: new Date().toISOString(),
+        evaluation_report: {
+          metrics: {
+            total_return_pct: 0.12,
+            sharpe_ratio: 1.15,
+            win_rate: 0.56,
+            accuracy: 0.56,
+            profit_factor: 1.35,
+            avg_confidence: 0.68,
+          },
+          hyperparameter_state: { selected_edge: "edge_plus" },
+        },
+      };
+      const fallbackReleases = [
+        {
+          tag: "v0.0.0",
+          name: "Sample Release",
+          published_at: new Date().toISOString(),
+          url: "#",
+          assets: [],
+        },
+      ];
+
+      async function loadJson(path, fallback) {
+        try {
+          const resp = await fetch(path);
+          if (!resp.ok) throw new Error("Bad response");
+          return await resp.json();
+        } catch (err) {
+          return fallback;
+        }
+      }
+
+      function fmtPct(value) {
+        return `${(value * 100).toFixed(2)}%`;
+      }
+
+      function renderMetrics(metricsPayload) {
+        const report = metricsPayload.evaluation_report || {};
+        const metrics = report.metrics || {};
+        const edge = (report.hyperparameter_state || {}).selected_edge || "edge_plus";
+        document.getElementById("edgeTag").textContent = edge;
+        document.getElementById("generatedAt").textContent = `Generated ${metricsPayload.generated_at}`;
+
+        const rows = [
+          ["Total Return", fmtPct(metrics.total_return_pct ?? 0)],
+          ["Sharpe Ratio", (metrics.sharpe_ratio ?? 0).toFixed(2)],
+          ["Win Rate", fmtPct(metrics.win_rate ?? 0)],
+          ["Accuracy", fmtPct(metrics.accuracy ?? 0)],
+          ["Profit Factor", (metrics.profit_factor ?? 0).toFixed(2)],
+          ["Avg Confidence", fmtPct(metrics.avg_confidence ?? 0)],
+        ];
+
+        const table = document.getElementById("metricTable");
+        table.innerHTML = rows
+          .map(([label, value]) => `<tr><th>${label}</th><td>${value}</td></tr>`)
+          .join("");
+
+        const ctx = document.getElementById("metricChart");
+        new Chart(ctx, {
+          type: "bar",
+          data: {
+            labels: rows.map((r) => r[0]),
+            datasets: [
+              {
+                label: "Metrics",
+                data: [
+                  metrics.total_return_pct ?? 0,
+                  metrics.sharpe_ratio ?? 0,
+                  metrics.win_rate ?? 0,
+                  metrics.accuracy ?? 0,
+                  metrics.profit_factor ?? 0,
+                  metrics.avg_confidence ?? 0,
+                ],
+                backgroundColor: "rgba(88, 166, 255, 0.6)",
+              },
+            ],
+          },
+          options: {
+            scales: {
+              y: {
+                ticks: { color: "#8b949e" },
+                grid: { color: "rgba(48,54,61,0.6)" },
+              },
+              x: {
+                ticks: { color: "#8b949e" },
+                grid: { display: false },
+              },
+            },
+            plugins: {
+              legend: { labels: { color: "#c9d1d9" } },
+            },
+          },
+        });
+      }
+
+      function safeUrl(url) {
+        const allowedProtocols = ["https:"];
+        if (window.location.protocol === "http:") {
+          allowedProtocols.push("http:");
+        }
+        try {
+          const parsed = new URL(url, window.location.href);
+          if (allowedProtocols.includes(parsed.protocol)) {
+            return parsed.href;
+          }
+        } catch (e) {
+          // Ignore and fall through to safe default.
+        }
+        return "#";
+      }
+
+      function renderReleases(releases) {
+        const target = document.getElementById("releaseList");
+        if (!releases.length) {
+          target.textContent = "No releases available yet.";
+          return;
+        }
+
+        target.textContent = "";
+
+        releases.forEach((release) => {
+          const date = new Date(release.published_at).toLocaleString();
+
+          const releaseDiv = document.createElement("div");
+          releaseDiv.className = "release";
+
+          const titleDiv = document.createElement("div");
+          const titleStrong = document.createElement("strong");
+          titleStrong.textContent = release.name || release.tag || "";
+          titleDiv.appendChild(titleStrong);
+          releaseDiv.appendChild(titleDiv);
+
+          const subtitleDiv = document.createElement("div");
+          subtitleDiv.className = "subtitle";
+          subtitleDiv.textContent = date;
+          releaseDiv.appendChild(subtitleDiv);
+
+          const assetsContainer = document.createElement("div");
+          (release.assets || []).forEach((asset) => {
+            const assetDiv = document.createElement("div");
+            const assetLink = document.createElement("a");
+            assetLink.href = safeUrl(asset.url);
+            assetLink.textContent = asset.name || "";
+            assetDiv.appendChild(assetLink);
+            assetsContainer.appendChild(assetDiv);
+          });
+          releaseDiv.appendChild(assetsContainer);
+
+          const viewDiv = document.createElement("div");
+          const viewLink = document.createElement("a");
+          viewLink.href = safeUrl(release.url);
+          viewLink.textContent = "View release →";
+          viewDiv.appendChild(viewLink);
+          releaseDiv.appendChild(viewDiv);
+
+          target.appendChild(releaseDiv);
+        });
+      }
+
+      Promise.all([
+        loadJson("data/metrics.json", fallbackMetrics),
+        loadJson("data/releases.json", fallbackReleases),
+      ]).then(([metrics, releases]) => {
+        renderMetrics(metrics);
+        renderReleases(releases);
+      });
+    </script>
+  </body>
+</html>

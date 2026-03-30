@@ -10,6 +10,7 @@ Usage:
     python -m src.main --run-type evaluate
     python -m src.main --run-type train-models
     python -m src.main --run-type infinity-train
+    python -m src.main --run-type download-data
 """
 
 from __future__ import annotations
@@ -38,16 +39,55 @@ except ImportError:  # pragma: no cover
 from src.config import AppConfig, MarketConfig, load_config
 from src.data_fetcher import HyperliquidDataFetcher
 from src.database_manager import DatabaseManager
-from src.evaluator import Evaluator, compute_metrics
+from src.evaluator import Evaluator, PerformanceMetrics, compute_metrics
 from src.ai_orchestrator import MultiAIOrchestrator
 from src.dataset_manager import DatasetManager
 from src.live_trader import LiveTrader
 from src.paper_broker import PaperBroker
 from src.risk_manager import PositionRequest, RiskManager
 from src.supervised_learning import SupervisedLearningModule
-from src.utils import fmt_pct, fmt_usd, get_logger, parse_snapshot_end_ms, utc_now, utc_now_ms
+from src.utils import clamp, fmt_pct, fmt_usd, get_logger, parse_snapshot_end_ms, utc_now, utc_now_ms
 
 log = get_logger(__name__)
+
+DEFAULT_HP_EDGE_MULTIPLIER = 1.15
+MIN_MEANINGFUL_HP_EDGE_MULTIPLIER = 1.01  # Ensure a meaningful capacity shift between edges.
+ACCURACY_WEIGHT = 0.6
+CONFIDENCE_WEIGHT = 0.4
+HP_EDGE_SCORE_FORMULA = f"{ACCURACY_WEIGHT:.2f}*accuracy + {CONFIDENCE_WEIGHT:.2f}*avg_confidence"
+DEFAULT_HYPERPARAM_EDGE = "edge_plus"
+
+
+def _update_running_average(old_avg: float, new_value: float, sample_count: int) -> float:
+    if sample_count <= 1:
+        return new_value
+    return (old_avg * (sample_count - 1) + new_value) / sample_count
+
+
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_edge_stats(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "samples": _coerce_int(raw.get("samples", 0)),
+        "avg_score": _coerce_float(raw.get("avg_score", 0.0)),
+        "avg_accuracy": _coerce_float(raw.get("avg_accuracy", 0.0)),
+        "avg_confidence": _coerce_float(raw.get("avg_confidence", 0.0)),
+        "last_score": _coerce_float(raw.get("last_score", 0.0)),
+    }
 
 
 def _build_db_manager(cfg) -> DatabaseManager:
@@ -339,6 +379,159 @@ def _build_multiplex_signal(
     return {"signal": 0, "confidence": 0.0, "agreement": 0.0, "delegated_to": "none"}
 
 
+def run_data_download(config_path: Optional[Path] = None) -> int:
+    """Download and cache OHLCV data from Hyperliquid + Yahoo Finance."""
+    from src.index_data_fetcher import IndexDataFetcher
+    import pandas as pd
+
+    cfg = load_config(config_path)
+    db = _build_db_manager(cfg)
+    log.setLevel(cfg.system.log_level)
+    log.info("=== DATA DOWNLOAD ===")
+
+    results_dir = Path(cfg.system.results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    csv_dir = Path(cfg.data.historical_csv_dir)
+    csv_dir.mkdir(parents=True, exist_ok=True)
+
+    fetcher = HyperliquidDataFetcher(cfg)
+    index_fetcher = IndexDataFetcher(cfg)
+
+    timeframes = [
+        cfg.data.primary_interval,
+        cfg.data.secondary_interval,
+        cfg.data.macro_interval,
+        cfg.data.hourly_interval,
+        cfg.data.daily_interval,
+    ]
+
+    enabled_markets = [m for m in _resolve_training_markets(cfg) if m.enabled]
+    crypto_written: List[str] = []
+    for market in enabled_markets:
+        for tf in timeframes:
+            try:
+                path = fetcher.save_ohlcv_csv(
+                    market.symbol,
+                    tf,
+                    lookback_candles=cfg.data.training_lookback_candles,
+                )
+                crypto_written.append(str(path))
+            except Exception as exc:
+                log.warning("Failed to download %s@%s: %s", market.symbol, tf, exc)
+
+    index_written: List[str] = []
+    enabled_index_markets = [m for m in cfg.trading.index_markets if m.enabled]
+    for idx_market in enabled_index_markets:
+        try:
+            path = index_fetcher.download_historical_csv(
+                idx_market.symbol,
+                yf_ticker=idx_market.yf_ticker or None,
+                interval=cfg.data.daily_interval,
+                max_years=cfg.data.historical_csv_max_years,
+            )
+            index_written.append(str(path))
+        except Exception as exc:
+            log.warning("Index data download failed for %s: %s", idx_market.symbol, exc)
+
+    ccxt_info: Dict[str, Any] = {"enabled": False, "status": "not_configured", "symbols": []}
+    exchange_name = os.environ.get("CCXT_EXCHANGE")
+    symbols_raw = os.environ.get("CCXT_SYMBOLS")
+    if exchange_name and symbols_raw:
+        ccxt_info["enabled"] = True
+        ccxt_symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+        ccxt_info["symbols"] = ccxt_symbols
+        try:
+            import ccxt  # type: ignore
+        except ImportError:
+            ccxt_info["status"] = "ccxt_not_installed"
+        else:
+            try:
+                exchange_cls = getattr(ccxt, exchange_name)
+                exchange = exchange_cls()
+                for symbol in ccxt_symbols:
+                    data = exchange.fetch_ohlcv(symbol, timeframe=cfg.data.primary_interval)
+                    if not data:
+                        continue
+                    df = pd.DataFrame(
+                        data, columns=["timestamp", "open", "high", "low", "close", "volume"]
+                    )
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+                    df = df.set_index("timestamp")
+                    path = csv_dir / f"ccxt_{exchange_name}_{symbol}_{cfg.data.primary_interval}.csv"
+                    df.to_csv(path)
+                    ccxt_info.setdefault("files", []).append(str(path))
+                ccxt_info["status"] = "ok"
+            except Exception as exc:
+                ccxt_info["status"] = f"error: {type(exc).__name__}"
+
+    redis_keys = db.cache_keys_sample("*", limit=50)
+    postgres_url = os.environ.get("POSTGRES_URL") or os.environ.get("DATABASE_URL")
+    postgres_info = {"configured": bool(postgres_url), "status": "not_configured"}
+    if postgres_url:
+        try:
+            import psycopg  # type: ignore
+        except ImportError:
+            postgres_info["status"] = "driver_missing"
+        else:
+            try:
+                conn = psycopg.connect(postgres_url, connect_timeout=3)
+                conn.close()
+                postgres_info["status"] = "available"
+            except Exception as exc:
+                postgres_info["status"] = f"unreachable: {type(exc).__name__}"
+
+    discovery = {
+        "redis": {
+            "available": db.redis.is_available,
+            "embedded": db.redis.is_embedded,
+            "key_count": len(redis_keys),
+            "sample_keys": redis_keys,
+            "sampled": True,
+        },
+        "sqlite": {
+            "db_path": str(db.db_path),
+            "exists": db.db_path.exists(),
+        },
+        "postgres": postgres_info,
+        "csv_dir": str(csv_dir),
+        "csv_count": len(list(csv_dir.glob("*.csv"))),
+    }
+
+    summary = {
+        "generated_at": utc_now().isoformat(),
+        "timeframes": timeframes,
+        "crypto": {
+            "symbols": [m.symbol for m in enabled_markets],
+            "files": crypto_written,
+        },
+        "indices": {
+            "symbols": [m.symbol for m in enabled_index_markets],
+            "files": index_written,
+        },
+        "ccxt": ccxt_info,
+        "discovery": discovery,
+    }
+
+    summary_path = results_dir / "data_download_summary.json"
+    with open(summary_path, "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2)
+
+    discovery_path = results_dir / "data_discovery.json"
+    with open(discovery_path, "w", encoding="utf-8") as fh:
+        json.dump(discovery, fh, indent=2)
+
+    db.set_cache("data:discovery", discovery)
+    db.record_task_completion(
+        task_name="data_download",
+        run_type="download-data",
+        mode=cfg.trading.mode,
+        status="success",
+        metadata={"crypto_symbols": len(enabled_markets), "index_symbols": len(enabled_index_markets)},
+    )
+    log.info("Data download summary saved to %s", summary_path)
+    return 0
+
+
 def _update_model_weights_from_evaluation(
     cfg: AppConfig,
     db: DatabaseManager,
@@ -405,6 +598,259 @@ def _update_model_weights_from_evaluation(
                 "win_rate": win_rate,
             },
         )
+
+
+def _resolve_hp_edge_multiplier() -> float:
+    raw = os.environ.get("HP_EDGE_MULTIPLIER", str(DEFAULT_HP_EDGE_MULTIPLIER))
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning("Invalid HP_EDGE_MULTIPLIER=%s; using default %s", raw, DEFAULT_HP_EDGE_MULTIPLIER)
+        return DEFAULT_HP_EDGE_MULTIPLIER
+    if value < MIN_MEANINGFUL_HP_EDGE_MULTIPLIER:
+        log.warning("HP_EDGE_MULTIPLIER too small (%s); using %s", raw, DEFAULT_HP_EDGE_MULTIPLIER)
+        return DEFAULT_HP_EDGE_MULTIPLIER
+    return value
+
+
+def _build_hyperparameter_edge(cfg: AppConfig, *, multiplier: float, label: str) -> Dict[str, Any]:
+    direction = "increase" if multiplier >= 1.0 else "decrease"
+
+    def _scale_int(
+        value: int,
+        multiplier_value: float,
+        minimum: int = 1,
+        maximum: Optional[int] = None,
+    ) -> int:
+        scaled = int(round(value * multiplier_value))
+        scaled = max(minimum, scaled)
+        if maximum is not None:
+            scaled = min(maximum, scaled)
+        return scaled
+
+    def _scale_float(
+        value: float,
+        multiplier_value: float,
+        minimum: float = 0.0001,
+        maximum: Optional[float] = None,
+    ) -> float:
+        scaled = value * multiplier_value
+        if maximum is not None:
+            scaled = clamp(scaled, minimum, maximum)
+        else:
+            scaled = max(minimum, scaled)
+        return float(scaled)
+
+    def _append(adjustments: List[Dict[str, Any]], parameter: str, old: Any, new: Any) -> None:
+        if isinstance(old, float) and isinstance(new, float):
+            if abs(old - new) < 1e-9:
+                return
+        elif old == new:
+            return
+        adjustments.append(
+            {
+                "parameter": parameter,
+                "old_value": old,
+                "new_value": new,
+                "direction": direction,
+                "multiplier": multiplier,
+            }
+        )
+
+    adjustments: List[Dict[str, Any]] = []
+
+    _append(
+        adjustments,
+        "ml.models.xgboost.n_estimators",
+        cfg.ml.xgb_n_estimators,
+        _scale_int(cfg.ml.xgb_n_estimators, multiplier, minimum=50),
+    )
+    _append(
+        adjustments,
+        "ml.models.xgboost.max_depth",
+        cfg.ml.xgb_max_depth,
+        _scale_int(cfg.ml.xgb_max_depth, multiplier, minimum=2, maximum=16),
+    )
+    _append(
+        adjustments,
+        "ml.models.xgboost.learning_rate",
+        cfg.ml.xgb_learning_rate,
+        _scale_float(cfg.ml.xgb_learning_rate, multiplier, minimum=0.005, maximum=0.5),
+    )
+    _append(
+        adjustments,
+        "ml.models.xgboost.min_child_weight",
+        cfg.ml.xgb_min_child_weight,
+        _scale_int(cfg.ml.xgb_min_child_weight, multiplier, minimum=1, maximum=20),
+    )
+    _append(
+        adjustments,
+        "ml.models.xgboost.subsample",
+        cfg.ml.xgb_subsample,
+        _scale_float(cfg.ml.xgb_subsample, multiplier, minimum=0.5, maximum=1.0),
+    )
+    _append(
+        adjustments,
+        "ml.models.xgboost.colsample_bytree",
+        cfg.ml.xgb_colsample_bytree,
+        _scale_float(cfg.ml.xgb_colsample_bytree, multiplier, minimum=0.5, maximum=1.0),
+    )
+
+    _append(
+        adjustments,
+        "ml.models.gradient_boost.n_estimators",
+        cfg.ml.gb_n_estimators,
+        _scale_int(cfg.ml.gb_n_estimators, multiplier, minimum=50),
+    )
+    _append(
+        adjustments,
+        "ml.models.gradient_boost.max_depth",
+        cfg.ml.gb_max_depth,
+        _scale_int(cfg.ml.gb_max_depth, multiplier, minimum=2, maximum=10),
+    )
+    _append(
+        adjustments,
+        "ml.models.gradient_boost.learning_rate",
+        cfg.ml.gb_learning_rate,
+        _scale_float(cfg.ml.gb_learning_rate, multiplier, minimum=0.01, maximum=0.5),
+    )
+    _append(
+        adjustments,
+        "ml.models.gradient_boost.subsample",
+        cfg.ml.gb_subsample,
+        _scale_float(cfg.ml.gb_subsample, multiplier, minimum=0.5, maximum=1.0),
+    )
+
+    _append(
+        adjustments,
+        "ml.models.random_forest.n_estimators",
+        cfg.ml.rf_n_estimators,
+        _scale_int(cfg.ml.rf_n_estimators, multiplier, minimum=50),
+    )
+    _append(
+        adjustments,
+        "ml.models.random_forest.max_depth",
+        cfg.ml.rf_max_depth,
+        _scale_int(cfg.ml.rf_max_depth, multiplier, minimum=2, maximum=20),
+    )
+    _append(
+        adjustments,
+        "ml.models.random_forest.min_samples_leaf",
+        cfg.ml.rf_min_samples_leaf,
+        _scale_int(cfg.ml.rf_min_samples_leaf, multiplier, minimum=1, maximum=10),
+    )
+    if cfg.ml.rf_max_leaf_nodes is not None:
+        _append(
+            adjustments,
+            "ml.models.random_forest.max_leaf_nodes",
+            cfg.ml.rf_max_leaf_nodes,
+            _scale_int(cfg.ml.rf_max_leaf_nodes, multiplier, minimum=10),
+        )
+
+    _append(
+        adjustments,
+        "ml.models.extra_trees.n_estimators",
+        cfg.ml.extra_trees_n_estimators,
+        _scale_int(cfg.ml.extra_trees_n_estimators, multiplier, minimum=50),
+    )
+    _append(
+        adjustments,
+        "ml.models.extra_trees.max_depth",
+        cfg.ml.extra_trees_max_depth,
+        _scale_int(cfg.ml.extra_trees_max_depth, multiplier, minimum=2, maximum=20),
+    )
+    _append(
+        adjustments,
+        "ml.models.extra_trees.min_samples_leaf",
+        cfg.ml.extra_trees_min_samples_leaf,
+        _scale_int(cfg.ml.extra_trees_min_samples_leaf, multiplier, minimum=1, maximum=10),
+    )
+    if cfg.ml.extra_trees_max_leaf_nodes is not None:
+        _append(
+            adjustments,
+            "ml.models.extra_trees.max_leaf_nodes",
+            cfg.ml.extra_trees_max_leaf_nodes,
+            _scale_int(cfg.ml.extra_trees_max_leaf_nodes, multiplier, minimum=10),
+        )
+
+    return {
+        "label": label,
+        "direction": direction,
+        "multiplier": multiplier,
+        "config_multiplier": multiplier,
+        "adjustments": adjustments,
+    }
+
+
+def _build_hyperparameter_edges(cfg: AppConfig) -> Dict[str, Dict[str, Any]]:
+    base_multiplier = _resolve_hp_edge_multiplier()
+    return {
+        "edge_plus": _build_hyperparameter_edge(cfg, multiplier=base_multiplier, label="capacity_plus"),
+        "edge_minus": _build_hyperparameter_edge(
+            cfg, multiplier=1 / base_multiplier, label="capacity_minus"
+        ),
+    }
+
+
+def _score_hyperparameter_edge(metrics: PerformanceMetrics) -> float:
+    """Blend accuracy and confidence using a 60/40 accuracy/confidence split."""
+    accuracy = clamp(metrics.accuracy, 0.0, 1.0)
+    confidence = clamp(metrics.avg_confidence, 0.0, 1.0)
+    return accuracy * ACCURACY_WEIGHT + confidence * CONFIDENCE_WEIGHT
+
+
+def _update_hyperparameter_edges(
+    cfg: AppConfig,
+    db: DatabaseManager,
+    metrics: PerformanceMetrics,
+) -> Dict[str, Any]:
+    edges = _build_hyperparameter_edges(cfg)
+    state = db.get_cache("evaluation:hyperparam_edges")
+    if not isinstance(state, dict):
+        state = {}
+    selected_edge = state.get("selected_edge", DEFAULT_HYPERPARAM_EDGE)
+    if selected_edge not in edges:
+        selected_edge = DEFAULT_HYPERPARAM_EDGE
+
+    score = _score_hyperparameter_edge(metrics)
+    edge_stats = state.get("edges", {})
+    if not isinstance(edge_stats, dict):
+        edge_stats = {}
+
+    current_stats = _normalize_edge_stats(edge_stats.get(selected_edge))
+    samples = current_stats["samples"] + 1
+    avg_score = _update_running_average(current_stats["avg_score"], score, samples)
+    avg_accuracy = _update_running_average(current_stats["avg_accuracy"], metrics.accuracy, samples)
+    avg_confidence = _update_running_average(
+        current_stats["avg_confidence"], metrics.avg_confidence, samples
+    )
+    edge_stats[selected_edge] = {
+        "samples": samples,
+        "avg_score": avg_score,
+        "avg_accuracy": avg_accuracy,
+        "avg_confidence": avg_confidence,
+        "last_score": score,
+    }
+
+    best_edge = selected_edge
+    best_score = _coerce_float(edge_stats[selected_edge].get("avg_score", 0.0))
+    for edge_name in edges:
+        candidate = _normalize_edge_stats(edge_stats.get(edge_name))
+        candidate_score = candidate["avg_score"]
+        if candidate_score > best_score:
+            best_score = candidate_score
+            best_edge = edge_name
+
+    edge_state = {
+        "selected_edge": best_edge,
+        "last_evaluated_edge": selected_edge,
+        "score_formula": HP_EDGE_SCORE_FORMULA,
+        "edges": edge_stats,
+        "edge_configs": edges,
+        "updated_at": utc_now().isoformat(),
+    }
+    db.set_cache("evaluation:hyperparam_edges", edge_state)
+    return edge_state
 
 
 def _ensure_model_ready(
@@ -1075,6 +1521,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
     actions_taken: List[Dict] = []
     action_times: List[float] = []
     signal_payloads: List[Dict] = []
+    confidence_values: List[float] = []
 
     for market in cfg.trading.markets:
         if not market.enabled:
@@ -1103,6 +1550,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         ml_signal = _build_multiplex_signal(
             cfg, ensemble, delegation_agent, snapshot, prior_regime, symbol=symbol
         )
+        confidence_values.append(float(ml_signal.get("confidence", 0.0)))
         log.info(
             "%s ML signal: %s (conf=%.3f, agree=%.2f, nn_primary=%s, delegated_to=%s)",
             symbol,
@@ -1239,6 +1687,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
     total_ret = (equity - cfg.paper_broker.initial_equity) / cfg.paper_broker.initial_equity
     avg_action_time = sum(action_times) / len(action_times) if action_times else 0.0
     avg_agent_time = agent.avg_answer_time
+    avg_confidence = sum(confidence_values) / len(confidence_values) if confidence_values else 0.0
     summary = (
         f"## 📊 Paper Trading Cycle – {utc_now().strftime('%Y-%m-%d %H:%M UTC')}\n\n"
         f"- **Equity:** {fmt_usd(equity)}\n"
@@ -1248,6 +1697,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
         f"- **Actions This Cycle:** {len(actions_taken)}\n"
         f"- **Avg Action Time:** {avg_action_time:.2f}s\n"
         f"- **Avg Agent Time:** {avg_agent_time:.2f}s\n"
+        f"- **Avg Confidence:** {avg_confidence:.2%}\n"
     )
     _print_github_summary(summary)
     db.set_cache(
@@ -1260,6 +1710,7 @@ def run_paper_signal(config_path: Optional[Path] = None) -> int:
             "num_positions": len(broker.positions),
             "avg_action_time_s": avg_action_time,
             "avg_agent_time_s": avg_agent_time,
+            "avg_confidence": avg_confidence,
             "signal_payloads": signal_payloads,
         },
     )
@@ -1465,9 +1916,11 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
     last_cycle = db.get_cache("signal:paper:last_cycle")
     cached_agent_time = 0.0
     cached_action_time = 0.0
+    cached_confidence = 0.0
     if isinstance(last_cycle, dict):
         cached_agent_time = float(last_cycle.get("avg_agent_time_s", 0.0))
         cached_action_time = float(last_cycle.get("avg_action_time_s", 0.0))
+        cached_confidence = float(last_cycle.get("avg_confidence", 0.0))
 
     metrics, adjustments = evaluator.evaluate(
         trade_history,
@@ -1476,15 +1929,21 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
         num_positions=len(broker.positions),
         gemini_answer_time_avg_s=cached_agent_time,
         action_time_avg_s=cached_action_time,
+        avg_confidence=cached_confidence,
     )
 
     evaluator.print_report(metrics, adjustments)
 
     results_dir = Path(cfg.system.results_dir)
+    edge_state = _update_hyperparameter_edges(cfg, db, metrics)
     evaluator.save_report(
         metrics, adjustments,
         results_dir / "evaluation_report.json",
         label=f"eval_{utc_now().strftime('%Y%m%d_%H%M')}",
+        extra={
+            "hyperparameter_edges": edge_state.get("edge_configs", {}),
+            "hyperparameter_state": edge_state,
+        },
     )
 
     # Evaluation-driven model weight update.
@@ -1521,9 +1980,15 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
         f"| Num Positions | {metrics.num_positions} |\n"
         f"| Avg Trade Length | {metrics.avg_trade_duration_hours:.2f}h |\n"
         f"| Avg Leverage | {metrics.avg_leverage_used:.1f}x |\n"
+        f"| Avg Confidence | {fmt_pct(metrics.avg_confidence)} |\n"
         f"| Gemini Avg Time | {metrics.gemini_answer_time_avg_s:.2f}s |\n"
         f"| Action Avg Time | {metrics.action_time_avg_s:.2f}s |\n\n"
         f"**Threshold Check:** {'✅ PASS' if passes else '❌ FAIL'}\n"
+    )
+    selected_edge = edge_state.get("selected_edge", DEFAULT_HYPERPARAM_EDGE)
+    summary += (
+        f"\n**Hyperparameter Edge:** `{selected_edge}` "
+        f"(score={edge_state.get('edges', {}).get(selected_edge, {}).get('avg_score', 0.0):.3f})\n"
     )
     if adjustments:
         summary += "\n### Auto-Adjustments\n"
@@ -1538,6 +2003,7 @@ def run_evaluation(config_path: Optional[Path] = None) -> int:
             "sharpe_ratio": metrics.sharpe_ratio,
             "pause_trading": pause_trading,
             "pause_reason": pause_reason,
+            "hyperparameter_edge": edge_state.get("selected_edge", DEFAULT_HYPERPARAM_EDGE),
         },
     )
     db.record_task_completion(
@@ -2384,6 +2850,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return run_full_cycle(cfg_path)
     elif args.run_type == "training-pipeline":
         return run_training_pipeline(cfg_path)
+    elif args.run_type == "download-data":
+        return run_data_download(cfg_path)
     elif args.run_type == "health-check":
         return run_health_check(cfg_path)
     elif args.run_type == "backtest":
