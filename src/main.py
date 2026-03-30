@@ -64,6 +64,32 @@ def _update_running_average(old_avg: float, new_value: float, sample_count: int)
     return (old_avg * (sample_count - 1) + new_value) / sample_count
 
 
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_edge_stats(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "samples": _coerce_int(raw.get("samples", 0)),
+        "avg_score": _coerce_float(raw.get("avg_score", 0.0)),
+        "avg_accuracy": _coerce_float(raw.get("avg_accuracy", 0.0)),
+        "avg_confidence": _coerce_float(raw.get("avg_confidence", 0.0)),
+        "last_score": _coerce_float(raw.get("last_score", 0.0)),
+    }
+
+
 def _build_db_manager(cfg) -> DatabaseManager:
     db_path = Path(cfg.system.state_dir) / cfg.system.database_file
     cache_cfg = getattr(cfg, "cache", None)
@@ -790,30 +816,6 @@ def _update_hyperparameter_edges(
     edge_stats = state.get("edges", {})
     if not isinstance(edge_stats, dict):
         edge_stats = {}
-
-    # Local helpers keep edge-state sanitization scoped to this workflow state path.
-    def _coerce_float(value: Any, default: float = 0.0) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return default
-
-    def _coerce_int(value: Any, default: int = 0) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
-    def _normalize_edge_stats(raw: Any) -> Dict[str, Any]:
-        if not isinstance(raw, dict):
-            raw = {}
-        return {
-            "samples": _coerce_int(raw.get("samples", 0)),
-            "avg_score": _coerce_float(raw.get("avg_score", 0.0)),
-            "avg_accuracy": _coerce_float(raw.get("avg_accuracy", 0.0)),
-            "avg_confidence": _coerce_float(raw.get("avg_confidence", 0.0)),
-            "last_score": _coerce_float(raw.get("last_score", 0.0)),
-        }
 
     current_stats = _normalize_edge_stats(edge_stats.get(selected_edge))
     samples = current_stats["samples"] + 1

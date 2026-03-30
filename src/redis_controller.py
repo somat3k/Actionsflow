@@ -217,7 +217,8 @@ class RedisController:
         try:
             if hasattr(self._client, "scan_iter"):
                 results: List[str] = []
-                for key in self._client.scan_iter(self._ns(pattern), count=limit):
+                batch_size = 100
+                for key in self._client.scan_iter(self._ns(pattern), count=batch_size):
                     results.append(self._strip_ns(key))
                     if len(results) >= limit:
                         break
