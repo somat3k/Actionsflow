@@ -70,8 +70,8 @@ def compute_metrics(
 ) -> PerformanceMetrics:
     """Compute full performance metrics from a list of closed trade dicts.
 
-    Optional keyword arguments ``num_positions``, ``gemini_answer_time_avg_s``
-    and ``action_time_avg_s`` are forwarded directly into the returned
+    Optional keyword arguments ``num_positions``, ``gemini_answer_time_avg_s``,
+    ``action_time_avg_s``, and ``avg_confidence`` are forwarded directly into the returned
     :class:`PerformanceMetrics` since they are measured externally by the
     signal cycle rather than derivable from trade history alone.
     """

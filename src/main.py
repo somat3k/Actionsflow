@@ -438,7 +438,7 @@ def run_data_download(config_path: Optional[Path] = None) -> int:
             except Exception as exc:
                 ccxt_info["status"] = f"error: {type(exc).__name__}"
 
-    redis_keys = db.cache_keys("*")
+    redis_keys = db.cache_keys_sample("*", limit=50)
     postgres_url = os.environ.get("POSTGRES_URL") or os.environ.get("DATABASE_URL")
     postgres_info = {"configured": bool(postgres_url), "status": "not_configured"}
     if postgres_url:
@@ -459,7 +459,8 @@ def run_data_download(config_path: Optional[Path] = None) -> int:
             "available": db.redis.is_available,
             "embedded": db.redis.is_embedded,
             "key_count": len(redis_keys),
-            "sample_keys": redis_keys[:50],
+            "sample_keys": redis_keys,
+            "sampled": True,
         },
         "sqlite": {
             "db_path": str(db.db_path),
@@ -787,11 +788,37 @@ def _update_hyperparameter_edges(
 
     score = _score_hyperparameter_edge(metrics)
     edge_stats = state.get("edges", {})
-    current_stats = edge_stats.get(
+    if not isinstance(edge_stats, dict):
+        edge_stats = {}
+
+    def _coerce_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _coerce_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _normalize_edge_stats(raw: Any) -> Dict[str, Any]:
+        if not isinstance(raw, dict):
+            raw = {}
+        return {
+            "samples": _coerce_int(raw.get("samples", 0)),
+            "avg_score": _coerce_float(raw.get("avg_score", 0.0)),
+            "avg_accuracy": _coerce_float(raw.get("avg_accuracy", 0.0)),
+            "avg_confidence": _coerce_float(raw.get("avg_confidence", 0.0)),
+            "last_score": _coerce_float(raw.get("last_score", 0.0)),
+        }
+
+    current_stats = _normalize_edge_stats(edge_stats.get(selected_edge))
         selected_edge,
         {"samples": 0, "avg_score": 0.0, "avg_accuracy": 0.0, "avg_confidence": 0.0},
     )
-    samples = int(current_stats.get("samples", 0)) + 1
+    samples = current_stats["samples"] + 1
     avg_score = _update_running_average(current_stats.get("avg_score", 0.0), score, samples)
     avg_accuracy = _update_running_average(
         current_stats.get("avg_accuracy", 0.0), metrics.accuracy, samples
@@ -808,10 +835,10 @@ def _update_hyperparameter_edges(
     }
 
     best_edge = selected_edge
-    best_score = edge_stats[selected_edge]["avg_score"]
+    best_score = _coerce_float(edge_stats[selected_edge].get("avg_score", 0.0))
     for edge_name in edges:
-        candidate = edge_stats.get(edge_name, {})
-        candidate_score = float(candidate.get("avg_score", 0.0))
+        candidate = _normalize_edge_stats(edge_stats.get(edge_name))
+        candidate_score = candidate["avg_score"]
         if candidate_score > best_score:
             best_score = candidate_score
             best_edge = edge_name

@@ -67,7 +67,7 @@ on:
         default: "1m,5m,15m"
       min_trades_per_day:
         type: string
-        default: "2000"
+        default: "20"
       signal_cycles:
         type: string
         default: "1"
@@ -107,7 +107,7 @@ jobs:
           MODE="${{ inputs.trading_mode || github.event.client_payload.mode || 'paper' }}"
           RUN_TYPE="${{ inputs.run_type || github.event.client_payload.run_type || 'signal' }}"
           INTERVAL_SEQUENCE="${{ inputs.interval_sequence || github.event.client_payload.interval_sequence || '1m,5m,15m' }}"
-          MIN_TRADES_PER_DAY="${{ inputs.min_trades_per_day || github.event.client_payload.min_trades_per_day || '2000' }}"
+          MIN_TRADES_PER_DAY="${{ inputs.min_trades_per_day || github.event.client_payload.min_trades_per_day || '20' }}"
           SIGNAL_CYCLES="${{ inputs.signal_cycles || github.event.client_payload.signal_cycles || '1' }}"
           INITIAL_EQUITY="${{ inputs.initial_equity || github.event.client_payload.initial_equity || '10000' }}"
           echo "trading_mode=${MODE}" >> "$GITHUB_OUTPUT"

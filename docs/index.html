@@ -200,27 +200,64 @@
         });
       }
 
+      function safeUrl(url) {
+        try {
+          const parsed = new URL(url, window.location.href);
+          if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+            return parsed.href;
+          }
+        } catch (e) {
+          // Ignore and fall through to safe default.
+        }
+        return "#";
+      }
+
       function renderReleases(releases) {
         const target = document.getElementById("releaseList");
         if (!releases.length) {
           target.textContent = "No releases available yet.";
           return;
         }
-        target.innerHTML = releases
-          .map((release) => {
-            const date = new Date(release.published_at).toLocaleString();
-            const assets = (release.assets || [])
-              .map((asset) => `<div><a href="${asset.url}">${asset.name}</a></div>`)
-              .join("");
-            return `
-              <div class="release">
-                <div><strong>${release.name || release.tag}</strong></div>
-                <div class="subtitle">${date}</div>
-                <div>${assets || ""}</div>
-                <div><a href="${release.url}">View release →</a></div>
-              </div>`;
-          })
-          .join("");
+
+        target.textContent = "";
+
+        releases.forEach((release) => {
+          const date = new Date(release.published_at).toLocaleString();
+
+          const releaseDiv = document.createElement("div");
+          releaseDiv.className = "release";
+
+          const titleDiv = document.createElement("div");
+          const titleStrong = document.createElement("strong");
+          titleStrong.textContent = release.name || release.tag || "";
+          titleDiv.appendChild(titleStrong);
+          releaseDiv.appendChild(titleDiv);
+
+          const subtitleDiv = document.createElement("div");
+          subtitleDiv.className = "subtitle";
+          subtitleDiv.textContent = date;
+          releaseDiv.appendChild(subtitleDiv);
+
+          const assetsContainer = document.createElement("div");
+          (release.assets || []).forEach((asset) => {
+            const assetDiv = document.createElement("div");
+            const assetLink = document.createElement("a");
+            assetLink.href = safeUrl(asset.url);
+            assetLink.textContent = asset.name || "";
+            assetDiv.appendChild(assetLink);
+            assetsContainer.appendChild(assetDiv);
+          });
+          releaseDiv.appendChild(assetsContainer);
+
+          const viewDiv = document.createElement("div");
+          const viewLink = document.createElement("a");
+          viewLink.href = safeUrl(release.url);
+          viewLink.textContent = "View release →";
+          viewDiv.appendChild(viewLink);
+          releaseDiv.appendChild(viewDiv);
+
+          target.appendChild(releaseDiv);
+        });
       }
 
       Promise.all([
