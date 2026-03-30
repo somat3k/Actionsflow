@@ -815,11 +815,8 @@ def _update_hyperparameter_edges(
         }
 
     current_stats = _normalize_edge_stats(edge_stats.get(selected_edge))
-        selected_edge,
-        {"samples": 0, "avg_score": 0.0, "avg_accuracy": 0.0, "avg_confidence": 0.0},
-    )
     samples = current_stats["samples"] + 1
-    avg_score = _update_running_average(current_stats.get("avg_score", 0.0), score, samples)
+    avg_score = _update_running_average(current_stats["avg_score"], score, samples)
     avg_accuracy = _update_running_average(
         current_stats.get("avg_accuracy", 0.0), metrics.accuracy, samples
     )
