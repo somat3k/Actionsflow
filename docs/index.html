@@ -201,9 +201,10 @@
       }
 
       function safeUrl(url) {
+        const allowedProtocol = window.location.protocol === "https:" ? "https:" : window.location.protocol;
         try {
           const parsed = new URL(url, window.location.href);
-          if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+          if (parsed.protocol === allowedProtocol) {
             return parsed.href;
           }
         } catch (e) {

@@ -791,6 +791,7 @@ def _update_hyperparameter_edges(
     if not isinstance(edge_stats, dict):
         edge_stats = {}
 
+    # Local helpers keep edge-state sanitisation scoped to this workflow state path.
     def _coerce_float(value: Any, default: float = 0.0) -> float:
         try:
             return float(value)
