@@ -2197,6 +2197,435 @@ def run_training_pipeline(config_path: Optional[Path] = None) -> int:
         db.close()
 
 
+def run_backtest(config_path: Optional[Path] = None) -> int:
+    """Run a multiplex-timeframe paper-broker backtest using historical CSV data.
+
+    Discovers CSV files in ``datasets/csv/`` (or ``BACKTEST_DATA_DIR``), loads
+    data for each selected symbol across all configured timeframes, and runs a
+    bar-by-bar paper-broker simulation with Groq-AI LLM validation.
+
+    The function combines all available timeframe data into a single rolling
+    decision window (the primary timeframe acts as the 1-second equivalent
+    decision clock) and runs the same multiplex-signal + risk-sizing pipeline
+    used in ``run_paper_signal``, but over historical CSV bars rather than
+    live market data.
+
+    Environment variables (all optional):
+        BACKTEST_SYMBOLS    Comma-separated symbols to backtest (e.g. ``BTC,ETH``).
+                            Defaults to all symbols discovered from CSV filenames.
+        BACKTEST_DATA_DIR   Folder containing ``SYMBOL_INTERVAL.csv`` files.
+                            Defaults to ``cfg.data.historical_csv_dir``.
+        BACKTEST_START      ISO-8601 start date (e.g. ``2024-01-01``).
+                            Defaults to the earliest available row.
+        BACKTEST_END        ISO-8601 end date. Defaults to the latest row.
+        LLM_SAMPLE_RATE     Fraction [0.0–1.0] of primary-TF bars forwarded to
+                            the Groq LLM for analysis.  Default: ``0.02`` (2 %).
+        MIN_TRADES          Minimum number of trades expected per symbol.
+                            A warning is emitted when not met.  Default: ``1``.
+    """
+    from src.ml_models import QuantumEnsemble, ModelDelegationAgent
+    import pandas as pd  # noqa: PLC0415
+
+    cfg = load_config(config_path)
+    db = _build_db_manager(cfg)
+    log.setLevel(cfg.system.log_level)
+    log.info("=== BACKTEST MODE ===")
+
+    # ── Environment overrides ──────────────────────────────────────────────
+    symbols_env = os.environ.get("BACKTEST_SYMBOLS", "")
+    requested_symbols = [s.strip().upper() for s in symbols_env.split(",") if s.strip()]
+    data_dir = Path(os.environ.get("BACKTEST_DATA_DIR", cfg.data.historical_csv_dir))
+    start_env = os.environ.get("BACKTEST_START", "")
+    end_env = os.environ.get("BACKTEST_END", "")
+    llm_sample_rate = float(os.environ.get("LLM_SAMPLE_RATE", "0.02"))
+    min_trades = int(os.environ.get("MIN_TRADES", "1"))
+
+    # Parse optional date-range filters
+    dt_start: Optional[datetime] = None
+    dt_end: Optional[datetime] = None
+    if start_env:
+        try:
+            dt_start = datetime.fromisoformat(start_env).replace(tzinfo=timezone.utc)
+            log.info("Backtest start: %s", dt_start.isoformat())
+        except ValueError:
+            log.warning("Invalid BACKTEST_START '%s'; using full history", start_env)
+    if end_env:
+        try:
+            dt_end = datetime.fromisoformat(end_env).replace(tzinfo=timezone.utc)
+            log.info("Backtest end: %s", dt_end.isoformat())
+        except ValueError:
+            log.warning("Invalid BACKTEST_END '%s'; using full history", end_env)
+
+    # ── Collect configured timeframes (deduped, order preserved) ──────────
+    all_configured_tfs = [
+        cfg.data.primary_interval,
+        cfg.data.secondary_interval,
+        cfg.data.macro_interval,
+        cfg.data.hourly_interval,
+        cfg.data.daily_interval,
+    ]
+    seen_tfs: set = set()
+    timeframes: List[str] = []
+    for tf in all_configured_tfs:
+        if tf not in seen_tfs:
+            seen_tfs.add(tf)
+            timeframes.append(tf)
+
+    # ── Discover available CSV data files ─────────────────────────────────
+    # File naming convention: {SYMBOL}_{INTERVAL}.csv  (e.g. BTC_1m.csv)
+    available_csvs: Dict[str, Dict[str, Path]] = {}
+    if data_dir.exists():
+        for csv_path in sorted(data_dir.glob("*.csv")):
+            parts = csv_path.stem.split("_", 1)
+            if len(parts) == 2:
+                sym, tf = parts[0].upper(), parts[1]
+                available_csvs.setdefault(sym, {})[tf] = csv_path
+
+    # Filter to the caller-requested symbols when specified
+    if requested_symbols:
+        available_csvs = {s: v for s, v in available_csvs.items() if s in requested_symbols}
+
+    # Fall back to config-enabled markets when no CSV files are found
+    if not available_csvs:
+        log.warning(
+            "No CSV files found in %s. "
+            "Run the data-download workflow first, or set BACKTEST_DATA_DIR.",
+            data_dir,
+        )
+        cfg_symbols = [m.symbol for m in cfg.trading.markets if m.enabled]
+        available_csvs = {s: {} for s in (requested_symbols or cfg_symbols)}
+
+    log.info(
+        "Backtest: %d symbol(s) | timeframes: %s | LLM sample rate: %.1f%%",
+        len(available_csvs), timeframes, llm_sample_rate * 100,
+    )
+
+    # ── Initialise shared components ───────────────────────────────────────
+    ensemble = QuantumEnsemble(cfg)
+    delegation_agent = ModelDelegationAgent(ensemble)
+    ai_orchestrator = MultiAIOrchestrator(cfg)
+    agent = ai_orchestrator._fallback
+    risk_mgr = RiskManager(cfg)
+    results_dir = Path(cfg.system.results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fresh isolated paper-broker for the backtest (does not persist)
+    broker = PaperBroker(cfg)
+    broker.equity = cfg.paper_broker.initial_equity
+    broker.initial_equity = cfg.paper_broker.initial_equity
+    broker.balance = cfg.paper_broker.initial_equity
+
+    all_trades: List[Dict[str, Any]] = []
+    symbol_reports: List[Dict[str, Any]] = []
+
+    # ── Per-symbol outer progress bar ─────────────────────────────────────
+    symbol_bar = _progress(
+        list(available_csvs.keys()),
+        desc="Backtest symbols",
+        unit="sym",
+    )
+
+    for symbol in symbol_bar:
+        # Load each timeframe CSV for this symbol
+        tf_data: Dict[str, Any] = {}
+        tf_paths = available_csvs.get(symbol, {})
+        for tf in timeframes:
+            csv_path = tf_paths.get(tf)
+            if csv_path is not None and csv_path.exists():
+                try:
+                    df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+                    if not df.empty:
+                        tf_data[tf] = df.sort_index()
+                except Exception as exc:
+                    log.warning("Could not load %s for %s/%s: %s", csv_path, symbol, tf, exc)
+
+        if not tf_data:
+            log.warning("[%s] No CSV data available – skipping", symbol)
+            continue
+
+        # Primary timeframe drives the decision clock
+        primary_tf = cfg.data.primary_interval
+        _primary_candidate = tf_data.get(primary_tf)
+        primary_df = _primary_candidate if _primary_candidate is not None else next(iter(tf_data.values()))
+
+        # Apply optional date-range slice to the primary series
+        if dt_start is not None:
+            primary_df = primary_df[primary_df.index >= dt_start]
+        if dt_end is not None:
+            primary_df = primary_df[primary_df.index <= dt_end]
+
+        if primary_df.empty:
+            log.warning("[%s] No bars in requested date range – skipping", symbol)
+            continue
+
+        # ── Inline model loading / training for this symbol ───────────────
+        loaded = ensemble.load(symbol)
+        if not loaded:
+            train_df = tf_data.get(primary_tf, primary_df)
+            if len(train_df) >= 50:
+                log.info("[%s] No cached model – training inline on %d rows", symbol, len(train_df))
+                try:
+                    if len(tf_data) > 1:
+                        ensemble.train_multi_timeframe_with_progression(
+                            tf_data,
+                            symbol=symbol,
+                            epochs=1,
+                            reinforcement_alpha=cfg.ml.reinforcement_alpha,
+                            primary_tf=primary_tf,
+                        )
+                    else:
+                        ensemble.train(train_df, symbol=symbol)
+                except Exception as exc:
+                    log.warning("[%s] Inline training failed: %s – using untrained model", symbol, exc)
+            else:
+                log.warning("[%s] Insufficient data (%d rows) for inline training", symbol, len(train_df))
+
+        # ── Bar-by-bar simulation loop ─────────────────────────────────────
+        n_bars = len(primary_df)
+        warmup_bars = max(50, int(n_bars * 0.05))  # skip first 5% for model warm-up
+        decision_bars = range(warmup_bars, n_bars)
+
+        bar_progress = _progress(
+            decision_bars,
+            desc=f"  [{symbol}]",
+            unit="bar",
+            leave=False,
+        )
+
+        prior_regime = "unknown"
+        llm_calls = 0
+        llm_period = max(1, round(1.0 / llm_sample_rate)) if llm_sample_rate > 0 else 0
+        current_price = 0.0
+
+        for bar_idx in bar_progress:
+            current_price = float(primary_df["close"].iloc[bar_idx])
+            window_end = primary_df.index[bar_idx]
+
+            # Build a rolling snapshot from all timeframes up to window_end
+            snapshot: Dict[str, Any] = {"candles": {}, "funding": {}}
+            for tf, tf_df in tf_data.items():
+                slice_df = tf_df[tf_df.index <= window_end]
+                if not slice_df.empty:
+                    snapshot["candles"][tf] = slice_df
+
+            # ── Multi-timeframe ML signal ──────────────────────────────────
+            try:
+                ml_signal = _build_multiplex_signal(
+                    cfg, ensemble, delegation_agent, snapshot, prior_regime, symbol=symbol
+                )
+            except Exception as exc:
+                log.debug("[%s] bar %d multiplex error: %s", symbol, bar_idx, exc)
+                broker.update_positions(symbol, current_price)
+                continue
+
+            validated_signal = ml_signal["signal"]
+            regime = prior_regime
+
+            # ── Groq LLM analysis (sampled) ────────────────────────────────
+            if llm_period > 0 and (bar_idx % llm_period) == 0:
+                try:
+                    analysis = ai_orchestrator.analyse_market_context(
+                        symbol, ml_signal, snapshot
+                    )
+                    validated_signal = analysis.get("validated_signal", validated_signal)
+                    regime = analysis.get("regime", "unknown")
+                    llm_calls += 1
+                except Exception as exc:
+                    log.debug("[%s] LLM analysis failed: %s", symbol, exc)
+
+            prior_regime = regime
+
+            # ATR from the primary slice
+            primary_slice = snapshot["candles"].get(primary_tf, primary_df.iloc[: bar_idx + 1])
+            atr = (
+                float(primary_slice["atr_14"].iloc[-1])
+                if "atr_14" in primary_slice.columns
+                else current_price * 0.01
+            )
+
+            # Apply SL/TP checks and funding on open positions
+            broker.update_positions(symbol, current_price)
+
+            existing = broker.get_open_position(symbol)
+            final_leverage = cfg.trading.leverage.default
+
+            # ── Signal execution ───────────────────────────────────────────
+            if validated_signal in (1, 2):
+                target_side = "long" if validated_signal == 1 else "short"
+                if existing and existing.side != target_side:
+                    broker.close_position(existing.position_id, current_price, "signal")
+                    existing = None
+
+                if existing is None:
+                    pos_req = PositionRequest(
+                        symbol=symbol,
+                        signal=validated_signal,
+                        confidence=ml_signal["confidence"],
+                        current_price=current_price,
+                        atr=atr,
+                        equity=broker.equity,
+                        leverage=final_leverage,
+                        open_positions=len(broker.positions),
+                    )
+                    spec = risk_mgr.compute_position(
+                        pos_req, [asdict(t) for t in broker.trade_history]
+                    )
+                    if spec.allowed:
+                        broker.open_position(spec, current_price)
+
+            elif validated_signal == 0 and existing:
+                broker.close_position(existing.position_id, current_price, "signal")
+
+        # Close any remaining open positions for this symbol at the last bar
+        for pos_id, pos in list(broker.positions.items()):
+            if pos.symbol == symbol and current_price > 0:
+                broker.close_position(pos_id, current_price, "backtest_end")
+
+        # ── Per-symbol PnL metrics ─────────────────────────────────────────
+        sym_trades = [asdict(t) for t in broker.trade_history if t.symbol == symbol]
+        all_trades.extend(sym_trades)
+
+        sym_pnl = sum(t["pnl"] for t in sym_trades)
+        sym_wins = sum(1 for t in sym_trades if t["pnl"] > 0)
+        sym_count = len(sym_trades)
+        avg_dur_s = (
+            sum(t.get("duration_ms", 0) for t in sym_trades) / (sym_count * 1000)
+            if sym_count else 0.0
+        )
+        avg_lev = (
+            sum(t.get("leverage", 1) for t in sym_trades) / sym_count
+            if sym_count else float(cfg.trading.leverage.default)
+        )
+        avg_size = (
+            sum(t.get("size_usd", 0) for t in sym_trades) / sym_count
+            if sym_count else 0.0
+        )
+
+        # SL/TP breakdown
+        sl_hits = sum(1 for t in sym_trades if t.get("exit_reason") == "stop_loss")
+        tp_hits = sum(1 for t in sym_trades if t.get("exit_reason") == "take_profit")
+
+        sym_report: Dict[str, Any] = {
+            "symbol": symbol,
+            "decision_bars": n_bars - warmup_bars,
+            "trades": sym_count,
+            "wins": sym_wins,
+            "losses": sym_count - sym_wins,
+            "win_rate_pct": (sym_wins / sym_count * 100) if sym_count else 0.0,
+            "total_pnl_usd": sym_pnl,
+            "avg_duration_s": avg_dur_s,
+            "avg_leverage": avg_lev,
+            "avg_size_usd": avg_size,
+            "stop_loss_exits": sl_hits,
+            "take_profit_exits": tp_hits,
+            "llm_calls": llm_calls,
+        }
+        symbol_reports.append(sym_report)
+
+        if sym_count < min_trades:
+            log.warning(
+                "[%s] %d trade(s) executed – below MIN_TRADES threshold (%d)",
+                symbol, sym_count, min_trades,
+            )
+        else:
+            log.info(
+                "[%s] %d trade(s) | PnL %s | win-rate %.1f%%",
+                symbol, sym_count, fmt_usd(sym_pnl),
+                (sym_wins / sym_count * 100) if sym_count else 0.0,
+            )
+
+    # ── Aggregate PnL report ───────────────────────────────────────────────
+    equity_final = broker.get_equity()
+    initial_equity = cfg.paper_broker.initial_equity
+    total_return = (equity_final - initial_equity) / initial_equity if initial_equity else 0.0
+    total_pnl = sum(r["total_pnl_usd"] for r in symbol_reports)
+    total_trades = sum(r["trades"] for r in symbol_reports)
+
+    exit_reasons: Dict[str, int] = {}
+    for t in all_trades:
+        reason = t.get("exit_reason", "unknown")
+        exit_reasons[reason] = exit_reasons.get(reason, 0) + 1
+
+    durations_s = [t.get("duration_ms", 0) / 1000.0 for t in all_trades]
+    dur_min = min(durations_s) if durations_s else 0.0
+    dur_max = max(durations_s) if durations_s else 0.0
+    dur_avg = sum(durations_s) / len(durations_s) if durations_s else 0.0
+
+    report: Dict[str, Any] = {
+        "mode": "backtest",
+        "initial_equity_usd": initial_equity,
+        "final_equity_usd": equity_final,
+        "total_return_pct": total_return * 100,
+        "total_pnl_usd": total_pnl,
+        "total_trades": total_trades,
+        "min_trades_threshold": min_trades,
+        "timeframes_used": timeframes,
+        "llm_sample_rate": llm_sample_rate,
+        "exit_reasons": exit_reasons,
+        "trade_duration_s": {"min": dur_min, "max": dur_max, "avg": dur_avg},
+        "symbols": symbol_reports,
+        "generated_at": utc_now().isoformat(),
+    }
+
+    report_path = results_dir / "backtest_report.json"
+    with open(report_path, "w") as fh:
+        json.dump(report, fh, indent=2, default=str)
+    log.info("Backtest report saved → %s", report_path)
+
+    # ── Console / GITHUB_STEP_SUMMARY ─────────────────────────────────────
+    lines: List[str] = [
+        f"## 🔄 Groq Backtest Report – {utc_now().strftime('%Y-%m-%d %H:%M UTC')}",
+        "",
+        f"- **Initial Equity:** {fmt_usd(initial_equity)}",
+        f"- **Final Equity:** {fmt_usd(equity_final)}",
+        f"- **Total Return:** {fmt_pct(total_return)}",
+        f"- **Total PnL:** {fmt_usd(total_pnl)}",
+        f"- **Total Trades:** {total_trades}",
+        f"- **Timeframes:** {', '.join(timeframes)}",
+        f"- **LLM Sample Rate:** {llm_sample_rate:.1%}",
+        "",
+        "### 📈 Per-Symbol Results",
+        "",
+        "| Symbol | Trades | Wins | Losses | Win% | PnL (USD) | Avg Lev | Avg Size (USD) | Avg Dur | SL Exits | TP Exits |",
+        "|--------|--------|------|--------|------|-----------|---------|--------------|---------|----------|----------|",
+    ]
+    for r in symbol_reports:
+        lines.append(
+            f"| {r['symbol']} | {r['trades']} | {r['wins']} | {r['losses']}"
+            f" | {r['win_rate_pct']:.1f}%"
+            f" | {fmt_usd(r['total_pnl_usd'])}"
+            f" | {r['avg_leverage']:.1f}x"
+            f" | {fmt_usd(r['avg_size_usd'])}"
+            f" | {r['avg_duration_s']:.0f}s"
+            f" | {r['stop_loss_exits']} | {r['take_profit_exits']} |"
+        )
+
+    if exit_reasons:
+        lines += ["", "### 🚦 Exit Reasons", ""]
+        for reason, count in sorted(exit_reasons.items(), key=lambda x: -x[1]):
+            lines.append(f"- **{reason}:** {count}")
+
+    lines += [
+        "",
+        "### ⏱️ Trade Duration Statistics",
+        f"- Min: {dur_min:.0f}s | Avg: {dur_avg:.0f}s | Max: {dur_max:.0f}s",
+    ]
+
+    summary_text = "\n".join(lines)
+    print(summary_text)
+    _print_github_summary(summary_text)
+
+    db.record_task_completion(
+        task_name="backtest",
+        run_type="backtest",
+        mode="paper",
+        status="success",
+        metadata={"total_trades": total_trades, "total_return_pct": total_return * 100},
+    )
+    db.close()
+    return 0
+
+
 def run_model_export(config_path: Optional[Path] = None) -> int:
     """Export trained sklearn models (GB, RF, Linear) to ONNX format and
     save per-symbol OHLCV training data as CSV files.
@@ -2380,7 +2809,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         choices=[
             "training", "signal", "evaluate", "train-models", "infinity-train",
             "export-models", "full-cycle", "training-pipeline", "health-check",
-            "download-data",
+            "backtest",
         ],
         required=True,
         help="What to run",
@@ -2425,6 +2854,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return run_data_download(cfg_path)
     elif args.run_type == "health-check":
         return run_health_check(cfg_path)
+    elif args.run_type == "backtest":
+        return run_backtest(cfg_path)
     else:
         log.error("Unknown run type: %s", args.run_type)
         return 1

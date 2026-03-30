@@ -1,0 +1,196 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Groq AI – Multiplex-Timeframe Backtester
+#
+#  Runs a bar-by-bar paper-broker backtest over historical CSV data for
+#  selected tokens.  All available timeframes (1m, 5m, 15m, 1h, 1d) are
+#  combined into a single rolling decision window; the Groq LLM is called on a
+#  configurable sample of bars for market-context validation.
+#
+#  Decision pipeline (per primary-TF bar):
+#    CSV discovery → multiplex ML signal (LSTM / XGB / RF / GB / Linear)
+#    → Groq LLM analysis (sampled) → risk sizing → PaperBroker execution
+#
+#  Output: backtest_report.json uploaded as workflow artifact + step summary.
+# ══════════════════════════════════════════════════════════════════════════════
+
+name: Groq AI – Multiplex Backtest
+
+on:
+  # Manual trigger with full parameter control
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: >
+          Comma-separated symbols to backtest  (e.g. BTC,ETH,SOL).
+          Leave blank to use all CSVs discovered in datasets/csv/.
+        required: false
+        default: "BTC,ETH,SOL"
+      backtest_start:
+        description: >
+          ISO-8601 start date for the backtest window  (e.g. 2024-01-01).
+          Leave blank to use the full available history.
+        required: false
+        default: ""
+      backtest_end:
+        description: >
+          ISO-8601 end date for the backtest window  (e.g. 2024-12-31).
+          Leave blank to run through the last available bar.
+        required: false
+        default: ""
+      account_size:
+        description: "Initial paper-broker equity in USD"
+        required: false
+        default: "10000"
+      llm_sample_rate:
+        description: >
+          Fraction of primary-TF bars sent to Groq for LLM analysis
+          (0.0 = disable, 1.0 = every bar).  Default 0.02 (2 %).
+        required: false
+        default: "0.02"
+      min_trades:
+        description: >
+          Minimum expected trades per symbol.  A warning is emitted (not
+          a failure) when a symbol produces fewer trades than this threshold.
+        required: false
+        default: "1"
+      data_dir:
+        description: >
+          Path to the folder containing SYMBOL_INTERVAL.csv files.
+          Defaults to datasets/csv (populated by the data-download workflow).
+        required: false
+        default: "datasets/csv"
+
+  # Triggered automatically after a fresh data download
+  repository_dispatch:
+    types:
+      - quantum_backtest
+
+concurrency:
+  group: groq-backtest-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    name: Groq Multiplex Backtest
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      # ── Repository & Python setup ────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── Restore historical CSV data ──────────────────────────────────────
+      # Populated by the data-download workflow; uses a prefix restore-key so
+      # the most-recent entry is always retrieved even across runs.
+      - name: Restore historical OHLCV CSVs
+        uses: actions/cache/restore@v4
+        with:
+          path: datasets/csv/
+          key: ohlcv-csv-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ohlcv-csv-${{ github.ref_name }}-
+            ohlcv-csv-
+
+      # ── Restore pre-trained ML models (optional) ─────────────────────────
+      # When present the backtest skips inline model training, saving time.
+      - name: Restore ML models (optional)
+        uses: actions/cache/restore@v4
+        with:
+          path: models/
+          key: ml-models-${{ github.ref_name }}-equity${{ inputs.account_size || '10000' }}-${{ github.run_id }}
+          restore-keys: |
+            ml-models-${{ github.ref_name }}-equity${{ inputs.account_size || '10000' }}-
+            ml-models-${{ github.ref_name }}-
+
+      # ── Create required directories ──────────────────────────────────────
+      - name: Create directories
+        run: mkdir -p results .trading_state models datasets/csv
+
+      # ── Print run parameters to summary ─────────────────────────────────
+      - name: Summarise parameters
+        run: |
+          echo "## ⚙️ Groq Backtest Parameters" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Parameter | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Symbols | \`${{ inputs.symbols || github.event.client_payload.symbols || 'BTC,ETH,SOL' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Start | \`${{ inputs.backtest_start || github.event.client_payload.backtest_start || '(full history)' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| End | \`${{ inputs.backtest_end || github.event.client_payload.backtest_end || '(latest bar)' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Account size | \`\$${{ inputs.account_size || '10000' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| LLM sample rate | \`${{ inputs.llm_sample_rate || '0.02' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Min trades | \`${{ inputs.min_trades || '1' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Data dir | \`${{ inputs.data_dir || 'datasets/csv' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Timeframes | \`1m, 5m, 15m, 1h, 1d (multiplex)\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trigger | \`${{ github.event_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Execute backtest ─────────────────────────────────────────────────
+      - name: Run Groq multiplex backtest
+        id: backtest
+        env:
+          TRADING_MODE: paper
+          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+          # Groq AI (primary LLM provider)
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Optional additional AI providers used as fallback
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Backtest parameters forwarded to run_backtest()
+          BACKTEST_SYMBOLS: ${{ inputs.symbols || github.event.client_payload.symbols || 'BTC,ETH,SOL' }}
+          BACKTEST_START: ${{ inputs.backtest_start || github.event.client_payload.backtest_start || '' }}
+          BACKTEST_END: ${{ inputs.backtest_end || github.event.client_payload.backtest_end || '' }}
+          BACKTEST_DATA_DIR: ${{ inputs.data_dir || github.event.client_payload.data_dir || 'datasets/csv' }}
+          LLM_SAMPLE_RATE: ${{ inputs.llm_sample_rate || '0.02' }}
+          MIN_TRADES: ${{ inputs.min_trades || '1' }}
+          INITIAL_EQUITY: ${{ inputs.account_size || '10000' }}
+        run: |
+          python -m src.main --run-type backtest --mode paper
+
+      # ── Upload backtest report as artifact ───────────────────────────────
+      - name: Upload backtest report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backtest-report-${{ github.run_number }}
+          path: |
+            results/backtest_report.json
+          retention-days: 90
+
+      # ── Upload any additional result files ───────────────────────────────
+      - name: Upload full results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backtest-full-results-${{ github.run_number }}
+          path: results/
+          retention-days: 30
+
+  # ── Post-backtest notification on failure ────────────────────────────────
+  notify-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    permissions: {}
+    needs: backtest
+    if: failure()
+    steps:
+      - name: Log failure
+        run: |
+          echo "## ❌ Groq Backtest Failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Run:** [${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Symbols:** ${{ inputs.symbols || 'BTC,ETH,SOL' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Time:** $(date -u)" >> "$GITHUB_STEP_SUMMARY"
