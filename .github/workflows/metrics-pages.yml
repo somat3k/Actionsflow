@@ -1,0 +1,189 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Metrics Dashboard – GitHub Pages
+#  Builds a static HTML dashboard from the latest evaluation + training artifacts
+#  and publishes it to GitHub Pages for model performance tracking.
+# ══════════════════════════════════════════════════════════════════════════════
+
+name: Metrics Dashboard – GitHub Pages
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+
+  workflow_dispatch:
+
+  workflow_run:
+    workflows:
+      - Model Evaluation & Adjustments
+      - Paper Trading – Model Training
+    types:
+      - completed
+
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: metrics-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Pages Site
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Resolve latest evaluation artifact
+        id: eval
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: "model-evaluation.yml",
+              per_page: 5,
+              status: "completed",
+            });
+            const run = runs.data.workflow_runs.find(r => r.conclusion === "success");
+            if (!run) {
+              core.info("No successful evaluation run found.");
+              return;
+            }
+            core.setOutput("run_id", run.id.toString());
+            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+              owner,
+              repo,
+              run_id: run.id,
+            });
+            const artifact = artifacts.data.artifacts.find(a => a.name.startsWith("eval-report-"));
+            if (artifact) {
+              core.setOutput("artifact_name", artifact.name);
+            }
+
+      - name: Download evaluation artifact
+        if: steps.eval.outputs.run_id != '' && steps.eval.outputs.artifact_name != ''
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.eval.outputs.run_id }}
+          name: ${{ steps.eval.outputs.artifact_name }}
+          path: artifacts/evaluation
+
+      - name: Resolve latest training artifact
+        id: training
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: "paper-training.yml",
+              per_page: 5,
+              status: "completed",
+            });
+            const run = runs.data.workflow_runs.find(r => r.conclusion === "success");
+            if (!run) {
+              core.info("No successful training run found.");
+              return;
+            }
+            core.setOutput("run_id", run.id.toString());
+            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+              owner,
+              repo,
+              run_id: run.id,
+            });
+            const artifact = artifacts.data.artifacts.find(a => a.name.startsWith("ml-models-equity"));
+            if (artifact) {
+              core.setOutput("artifact_name", artifact.name);
+            }
+
+      - name: Download training artifact
+        if: steps.training.outputs.run_id != '' && steps.training.outputs.artifact_name != ''
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.training.outputs.run_id }}
+          name: ${{ steps.training.outputs.artifact_name }}
+          path: artifacts/training
+
+      - name: Fetch release metadata
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const { owner, repo } = context.repo;
+            const releases = await github.rest.repos.listReleases({
+              owner,
+              repo,
+              per_page: 10,
+            });
+            const payload = releases.data.map(r => ({
+              tag: r.tag_name,
+              name: r.name,
+              published_at: r.published_at,
+              url: r.html_url,
+              assets: r.assets.map(a => ({
+                name: a.name,
+                size: a.size,
+                url: a.browser_download_url,
+              })),
+            }));
+            fs.mkdirSync("docs/data", { recursive: true });
+            fs.writeFileSync("docs/data/releases.json", JSON.stringify(payload, null, 2));
+
+      - name: Build metrics payload
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          docs_data = Path("docs/data")
+          docs_data.mkdir(parents=True, exist_ok=True)
+
+          eval_report = next(Path("artifacts/evaluation").rglob("evaluation_report.json"), None)
+          training_scores = next(Path("artifacts/training").rglob("training_scores.json"), None)
+
+          payload = {
+              "generated_at": datetime.now(timezone.utc).isoformat(),
+              "evaluation_report": {},
+              "training_scores": {},
+          }
+
+          if eval_report and eval_report.exists():
+              payload["evaluation_report"] = json.loads(eval_report.read_text())
+
+          if training_scores and training_scores.exists():
+              payload["training_scores"] = json.loads(training_scores.read_text())
+
+          (docs_data / "metrics.json").write_text(json.dumps(payload, indent=2))
+          PY
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    name: Deploy Pages Site
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

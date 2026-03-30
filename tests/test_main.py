@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import json
 from unittest.mock import patch
 
 import pytest
 
 from src.config import load_config
 from src.database_manager import DatabaseManager
+from src.evaluator import PerformanceMetrics
 from src.main import (
     _get_hyperliquid_private_key,
     _resolve_training_epochs,
     _resolve_trading_eligibility,
+    _update_hyperparameter_edges,
     main,
+    run_data_download,
     run_full_cycle,
     run_paper_signal,
     run_training_pipeline,
@@ -207,6 +211,29 @@ def test_resolve_trading_eligibility_override(tmp_path, monkeypatch):
     allowed, reason = _resolve_trading_eligibility(db)
     assert allowed
     assert "override" in reason.lower()
+
+
+def test_data_download_writes_summary(test_env, monkeypatch):
+    monkeypatch.setenv("TRAINING_SYMBOLS", "BTC")
+    assert run_data_download() == 0
+    summary_path = test_env / "results" / "data_download_summary.json"
+    discovery_path = test_env / "results" / "data_discovery.json"
+    assert summary_path.exists()
+    assert discovery_path.exists()
+    summary = json.loads(summary_path.read_text())
+    assert "crypto" in summary
+    assert "discovery" in summary
+
+
+def test_update_hyperparameter_edges_persists_state(tmp_path):
+    cfg = load_config()
+    db_path = tmp_path / cfg.system.state_dir / cfg.system.database_file
+    db = DatabaseManager(db_path)
+    metrics = PerformanceMetrics(accuracy=0.55, avg_confidence=0.65)
+    state = _update_hyperparameter_edges(cfg, db, metrics)
+    assert state["selected_edge"] in {"edge_plus", "edge_minus"}
+    cached = db.get_cache("evaluation:hyperparam_edges")
+    assert cached["selected_edge"] == state["selected_edge"]
 
 
 def _fail_live_signal(*_args, **_kwargs):

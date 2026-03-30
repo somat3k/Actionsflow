@@ -229,6 +229,19 @@ class DatabaseManager:
             ).fetchall()
         return [r[0] for r in rows]
 
+    def cache_keys_sample(self, pattern: str = "*", limit: int = 50) -> List[str]:
+        """Return a limited sample of cache keys matching *pattern*."""
+        if limit <= 0:
+            return []
+        if self._redis.is_available:
+            return self._redis.keys_sample(pattern, limit=limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT cache_key FROM task_cache WHERE cache_key LIKE ? LIMIT ?",
+                (pattern.replace("*", "%").replace("?", "_"), limit),
+            ).fetchall()
+        return [r[0] for r in rows]
+
     def record_dataset(
         self,
         symbol: str,

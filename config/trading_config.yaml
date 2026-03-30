@@ -231,6 +231,8 @@ ml:
       weight: 0.12
       n_estimators: 200
       max_depth: 10
+      min_samples_leaf: 1
+      max_leaf_nodes: null
 
     extra_trees:
       enabled: true
@@ -241,6 +243,8 @@ ml:
       # diverse feature coverage and low variance.
       n_estimators: 200
       max_depth: 10
+      min_samples_leaf: 1
+      max_leaf_nodes: null
 
     linear:
       enabled: true

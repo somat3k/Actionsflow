@@ -93,6 +93,12 @@ jobs:
             CSV_COUNT=$(find datasets/csv -name "*.csv" 2>/dev/null | wc -l)
             echo "- **CSV files written:** ${CSV_COUNT}" >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -f results/data_discovery.json ]; then
+            echo "### 🧭 Data Discovery" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat results/data_discovery.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Save CSV cache
         uses: actions/cache/save@v4
@@ -109,6 +115,7 @@ jobs:
           path: |
             datasets/csv/
             results/data_download_summary.json
+            results/data_discovery.json
           retention-days: 30
 
   # ── Trigger training session after fresh data is available ────────────────

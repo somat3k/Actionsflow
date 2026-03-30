@@ -106,9 +106,28 @@ class MLConfig:
     model_weights: Dict[str, float] = field(
         default_factory=lambda: dict(_DEFAULT_MODEL_WEIGHTS)
     )
+    # XGBoost hyperparameters
+    xgb_n_estimators: int = 500
+    xgb_max_depth: int = 6
+    xgb_learning_rate: float = 0.05
+    xgb_subsample: float = 0.8
+    xgb_colsample_bytree: float = 0.8
+    xgb_min_child_weight: int = 3
+    # Gradient Boosting hyperparameters
+    gb_n_estimators: int = 200
+    gb_max_depth: int = 5
+    gb_learning_rate: float = 0.05
+    gb_subsample: float = 0.8
+    # Random Forest hyperparameters
+    rf_n_estimators: int = 200
+    rf_max_depth: int = 10
+    rf_min_samples_leaf: int = 1
+    rf_max_leaf_nodes: Optional[int] = None
     # ExtraTrees (tree-classifier-decision-making-system) hyperparameters
     extra_trees_n_estimators: int = 200
     extra_trees_max_depth: int = 10
+    extra_trees_min_samples_leaf: int = 1
+    extra_trees_max_leaf_nodes: Optional[int] = None
     # Neural-Network priority: when NN confidence exceeds this threshold the NN
     # signal overrides the weighted-ensemble result for fast decision making.
     nn_override_threshold: float = field(
@@ -260,6 +279,15 @@ def _parse_symbol_list(raw: Any) -> List[str]:
     return [item.upper() for item in items]
 
 
+def _parse_optional_int(raw: Any) -> Optional[int]:
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def load_config(config_path: Optional[Path] = None) -> AppConfig:
     """Load YAML config and apply environment variable overrides."""
     path = config_path or CONFIG_FILE
@@ -408,6 +436,10 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         model_cfg = models_raw.get(yaml_name, {})
         if "weight" in model_cfg:
             model_weights[internal_name] = float(model_cfg["weight"])
+    xgb_cfg = models_raw.get("xgboost", {})
+    gb_cfg = models_raw.get("gradient_boost", {})
+    rf_cfg = models_raw.get("random_forest", {})
+    extra_cfg = models_raw.get("extra_trees", {})
     infinity_raw = training.get("infinity_loop", ml_raw.get("infinity_loop", {}))
     # Empty env vars intentionally clear defaults for symbol lists.
     nn_priority_env = os.environ.get("NN_PRIORITY_SYMBOLS")
@@ -441,12 +473,24 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             os.environ.get("REINFORCEMENT_ALPHA", training.get("reinforcement_alpha", 0.1))
         ),
         model_weights=model_weights,
-        extra_trees_n_estimators=int(
-            models_raw.get("extra_trees", {}).get("n_estimators", 200)
-        ),
-        extra_trees_max_depth=int(
-            models_raw.get("extra_trees", {}).get("max_depth", 10)
-        ),
+        xgb_n_estimators=int(xgb_cfg.get("n_estimators", 500)),
+        xgb_max_depth=int(xgb_cfg.get("max_depth", 6)),
+        xgb_learning_rate=float(xgb_cfg.get("learning_rate", 0.05)),
+        xgb_subsample=float(xgb_cfg.get("subsample", 0.8)),
+        xgb_colsample_bytree=float(xgb_cfg.get("colsample_bytree", 0.8)),
+        xgb_min_child_weight=int(xgb_cfg.get("min_child_weight", 3)),
+        gb_n_estimators=int(gb_cfg.get("n_estimators", 200)),
+        gb_max_depth=int(gb_cfg.get("max_depth", 5)),
+        gb_learning_rate=float(gb_cfg.get("learning_rate", 0.05)),
+        gb_subsample=float(gb_cfg.get("subsample", 0.8)),
+        rf_n_estimators=int(rf_cfg.get("n_estimators", 200)),
+        rf_max_depth=int(rf_cfg.get("max_depth", 10)),
+        rf_min_samples_leaf=int(rf_cfg.get("min_samples_leaf", 1)),
+        rf_max_leaf_nodes=_parse_optional_int(rf_cfg.get("max_leaf_nodes")),
+        extra_trees_n_estimators=int(extra_cfg.get("n_estimators", 200)),
+        extra_trees_max_depth=int(extra_cfg.get("max_depth", 10)),
+        extra_trees_min_samples_leaf=int(extra_cfg.get("min_samples_leaf", 1)),
+        extra_trees_max_leaf_nodes=_parse_optional_int(extra_cfg.get("max_leaf_nodes")),
         nn_override_threshold=float(
             os.environ.get(
                 "ML_NN_OVERRIDE_THRESHOLD",
