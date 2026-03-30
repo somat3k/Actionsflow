@@ -201,10 +201,13 @@
       }
 
       function safeUrl(url) {
-        const allowedProtocol = window.location.protocol === "https:" ? "https:" : window.location.protocol;
+        const allowedProtocols = ["https:"];
+        if (window.location.protocol === "http:") {
+          allowedProtocols.push("http:");
+        }
         try {
           const parsed = new URL(url, window.location.href);
-          if (parsed.protocol === allowedProtocol) {
+          if (allowedProtocols.includes(parsed.protocol)) {
             return parsed.href;
           }
         } catch (e) {
